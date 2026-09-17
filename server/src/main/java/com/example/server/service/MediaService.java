@@ -11,6 +11,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
@@ -40,6 +41,7 @@ public class MediaService {
     private final AgentTelemetry telemetry;
     private final QdrantVectorStore vectorStore;
     private final VideoContextService videoContextService;
+    private final KnowledgeSourceService knowledgeSourceService;
 
     private static final String MEDIA_MD5_KEY_PREFIX = "media:md5:";
     private static final Set<String> VIDEO_SUFFIXES = Set.of(
@@ -52,7 +54,8 @@ public class MediaService {
                         AgentCheckpointService checkpointService,
                         AgentTelemetry telemetry,
                         QdrantVectorStore vectorStore,
-                        VideoContextService videoContextService) {
+                        VideoContextService videoContextService,
+                        KnowledgeSourceService knowledgeSourceService) {
         this.mediaFileMapper = mediaFileMapper;
         this.redisTemplate = redisTemplate;
         this.minioUtils = minioUtils;
@@ -61,6 +64,7 @@ public class MediaService {
         this.telemetry = telemetry;
         this.vectorStore = vectorStore;
         this.videoContextService = videoContextService;
+        this.knowledgeSourceService = knowledgeSourceService;
     }
 
     public String calculateMd5(MultipartFile file) throws IOException {
@@ -84,6 +88,7 @@ public class MediaService {
         }
     }
 
+    @Transactional
     public MediaFile saveUploadedMedia(String filename, String fileUrl, Long userId, String md5) {
         MediaFile mediaFile = new MediaFile();
         mediaFile.setFilename(normalizeVideoFilename(filename));
@@ -95,6 +100,7 @@ public class MediaService {
         try {
             mediaFileMapper.insert(mediaFile);
             rememberContentHash(mediaFile.getId(), md5);
+            knowledgeSourceService.ensureMediaSource(mediaFile);
             invalidateUserList(userId);
             return mediaFile;
         } catch (RuntimeException e) {
@@ -142,8 +148,10 @@ public class MediaService {
         return persisted;
     }
 
+    @Transactional
     public void deleteOwnedMedia(Long mediaId, Long userId) {
         MediaFile mediaFile = requireOwnedMedia(mediaId, userId);
+        knowledgeSourceService.markMediaDeleted(userId, mediaId);
         mediaFileMapper.deleteById(mediaId);
         if (mediaFile.getFilePath() != null && mediaFile.getFilePath().startsWith("http")) {
             try {

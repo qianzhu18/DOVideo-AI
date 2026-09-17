@@ -1,26 +1,26 @@
 package com.example.server.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
-import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
 import java.time.LocalDateTime;
 
-/** A user-owned boundary for sources, retrieval and future MCP grants. */
 @Data
-@TableName("knowledge_spaces")
-public class KnowledgeSpace {
+@TableName("knowledge_source_versions")
+public class KnowledgeSourceVersion {
 
     @TableId(type = IdType.AUTO)
     private Long id;
 
-    private Long ownerUserId;
-    private String name;
-    private String description;
-    @TableField("is_system_default")
-    private Boolean systemDefault;
+    private Long sourceId;
+    private Integer versionNo;
+    private String contentHash;
+    private String parserVersion;
+    private String embeddingModel;
+    private String status;
+    private String failureReason;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

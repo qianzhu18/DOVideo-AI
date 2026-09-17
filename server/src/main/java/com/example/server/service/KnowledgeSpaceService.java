@@ -27,7 +27,7 @@ public class KnowledgeSpaceService {
     }
 
     public List<KnowledgeSpaceView> listOwnedSpaces(Long userId) {
-        ensureDefaultSpace(userId);
+        defaultSpaceForUser(userId);
         return knowledgeSpaceMapper.selectList(new QueryWrapper<KnowledgeSpace>()
                         .eq("owner_user_id", userId))
                 .stream()
@@ -39,7 +39,7 @@ public class KnowledgeSpaceService {
     }
 
     public KnowledgeSpaceView create(Long userId, KnowledgeSpaceCreateRequest request) {
-        ensureDefaultSpace(userId);
+        defaultSpaceForUser(userId);
         String name = normalizeName(request.name());
         if (existsWithName(userId, name, null)) {
             throw new BusinessException(ErrorCode.CONFLICT, "已存在同名知识空间");
@@ -85,7 +85,8 @@ public class KnowledgeSpaceService {
         return KnowledgeSpaceView.from(space);
     }
 
-    private KnowledgeSpace ensureDefaultSpace(Long userId) {
+    /** Ensures a stable landing space for newly uploaded videos and migrated media. */
+    public KnowledgeSpace defaultSpaceForUser(Long userId) {
         KnowledgeSpace existing = findDefaultSpace(userId);
         if (existing != null) return existing;
 
@@ -104,7 +105,7 @@ public class KnowledgeSpaceService {
         }
     }
 
-    private KnowledgeSpace requireOwnedSpace(Long userId, Long spaceId) {
+    public KnowledgeSpace requireOwnedSpace(Long userId, Long spaceId) {
         KnowledgeSpace space = knowledgeSpaceMapper.selectById(spaceId);
         if (space == null) throw new BusinessException(ErrorCode.NOT_FOUND, "知识空间不存在");
         if (!userId.equals(space.getOwnerUserId())) throw new SecurityException("无权访问该知识空间");
