@@ -5,6 +5,7 @@ import com.example.server.dto.KnowledgeSourceLocationRequest;
 import com.example.server.dto.KnowledgeSourceTagsRequest;
 import com.example.server.dto.KnowledgeSourceView;
 import com.example.server.service.AuthService;
+import com.example.server.service.KnowledgeSegmentIndexService;
 import com.example.server.service.KnowledgeSourceService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,9 +26,12 @@ import java.util.List;
 public class KnowledgeSourceController {
 
     private final KnowledgeSourceService sourceService;
+    private final KnowledgeSegmentIndexService segmentIndexService;
 
-    public KnowledgeSourceController(KnowledgeSourceService sourceService) {
+    public KnowledgeSourceController(KnowledgeSourceService sourceService,
+                                     KnowledgeSegmentIndexService segmentIndexService) {
         this.sourceService = sourceService;
+        this.segmentIndexService = segmentIndexService;
     }
 
     @GetMapping
@@ -68,5 +72,13 @@ public class KnowledgeSourceController {
             @PathVariable Long sourceId,
             @Valid @RequestBody KnowledgeSourceTagsRequest request) {
         return Result.ok(sourceService.replaceTags(userId, sourceId, request));
+    }
+
+    /** Manual rebuild of segments and vectors; also the migration path for pre-P2 media. */
+    @PostMapping("/{sourceId}/reindex")
+    public Result<Integer> reindex(
+            @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId,
+            @PathVariable Long sourceId) {
+        return Result.ok(segmentIndexService.indexSource(userId, sourceId).size());
     }
 }

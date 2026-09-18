@@ -16,6 +16,8 @@ import com.example.server.mapper.KnowledgeSourceMapper;
 import com.example.server.mapper.KnowledgeSourceTagMapper;
 import com.example.server.mapper.KnowledgeSourceVersionMapper;
 import com.example.server.mapper.MediaFileMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,6 +37,8 @@ import java.util.stream.Collectors;
 @Service
 public class KnowledgeSourceService {
 
+    private static final Logger log = LoggerFactory.getLogger(KnowledgeSourceService.class);
+
     public static final String SOURCE_TYPE_VIDEO = "VIDEO";
     public static final String STATUS_PENDING = "PENDING";
     public static final String STATUS_DELETED = "DELETED";
@@ -49,6 +53,7 @@ public class KnowledgeSourceService {
     private final KnowledgeSpaceService spaceService;
     private final KnowledgeCollectionService collectionService;
     private final KnowledgeAuditService auditService;
+    private final QdrantVectorStore vectorStore;
 
     public KnowledgeSourceService(KnowledgeSourceMapper sourceMapper,
                                   KnowledgeSourceVersionMapper versionMapper,
@@ -56,6 +61,7 @@ public class KnowledgeSourceService {
                                   MediaFileMapper mediaFileMapper,
                                   KnowledgeSpaceService spaceService,
                                   KnowledgeCollectionService collectionService,
+                                  QdrantVectorStore vectorStore,
                                   KnowledgeAuditService auditService) {
         this.sourceMapper = sourceMapper;
         this.versionMapper = versionMapper;
@@ -63,6 +69,7 @@ public class KnowledgeSourceService {
         this.mediaFileMapper = mediaFileMapper;
         this.spaceService = spaceService;
         this.collectionService = collectionService;
+        this.vectorStore = vectorStore;
         this.auditService = auditService;
     }
 
@@ -225,9 +232,23 @@ public class KnowledgeSourceService {
         source.setSpaceId(request.spaceId());
         source.setCollectionId(collection == null ? null : collection.getId());
         sourceMapper.updateById(source);
+        syncVectorLocation(source);
         auditService.record(userId, "SOURCE_MOVED", "SOURCE", source.getId(), source.getSpaceId(), source.getCollectionId(),
                 "fromSpace=" + previousSpaceId + ";fromCollection=" + previousCollectionId);
         return KnowledgeSourceView.from(source);
+    }
+
+    /**
+     * Keeps the Qdrant ownership payload in step with a move; otherwise the points keep
+     * the old spaceId and silently disappear from space-filtered search. Best-effort:
+     * a vector-store outage must not block an organizational change.
+     */
+    private void syncVectorLocation(KnowledgeSource source) {
+        try {
+            vectorStore.updateSourceLocation(source.getId(), source.getSpaceId(), source.getCollectionId());
+        } catch (RuntimeException e) {
+            log.warn("knowledge_vector_location_sync_failed sourceId={}", source.getId(), e);
+        }
     }
 
     @Transactional
@@ -242,12 +263,21 @@ public class KnowledgeSourceService {
                 "mediaId=" + mediaId);
     }
 
-    private KnowledgeSource requireOwnedSource(Long userId, Long sourceId) {
+    /** Ownership guard shared with the index and search services; throws for missing or foreign sources. */
+    public KnowledgeSource requireOwnedSource(Long userId, Long sourceId) {
         KnowledgeSource source = sourceMapper.selectById(sourceId);
         if (source == null || STATUS_DELETED.equals(source.getStatus())) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "内容源不存在");
         }
         if (!userId.equals(source.getOwnerUserId())) throw new SecurityException("无权访问该内容源");
+        return source;
+    }
+
+    public KnowledgeSource requireSourceByMediaId(Long mediaId) {
+        KnowledgeSource source = findByMediaId(mediaId);
+        if (source == null || STATUS_DELETED.equals(source.getStatus())) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "内容源不存在");
+        }
         return source;
     }
 

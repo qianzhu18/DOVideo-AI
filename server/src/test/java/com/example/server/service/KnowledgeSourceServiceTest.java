@@ -50,7 +50,7 @@ class KnowledgeSourceServiceTest {
 
         KnowledgeSourceService service = new KnowledgeSourceService(
                 sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
-                mock(KnowledgeAuditService.class));
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class));
         KnowledgeSource source = service.ensureMediaSource(media(9L, 7L, "jvm.mp4", "aabb"));
 
         assertEquals(21L, source.getId());
@@ -81,7 +81,7 @@ class KnowledgeSourceServiceTest {
 
         KnowledgeSourceService service = new KnowledgeSourceService(
                 sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
-                mock(KnowledgeAuditService.class));
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class));
         KnowledgeSourceView moved = service.move(7L, 21L, new KnowledgeSourceLocationRequest(5L, 31L));
 
         assertEquals(5L, moved.spaceId());
@@ -103,7 +103,7 @@ class KnowledgeSourceServiceTest {
 
         KnowledgeSourceService service = new KnowledgeSourceService(
                 sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
-                mock(KnowledgeAuditService.class));
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class));
         KnowledgeSourceView result = service.replaceTags(
                 7L, 21L, new KnowledgeSourceTagsRequest(List.of(" JVM ", "", "JVM")));
 
@@ -126,7 +126,7 @@ class KnowledgeSourceServiceTest {
 
         KnowledgeSourceService service = new KnowledgeSourceService(
                 sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
-                mock(KnowledgeAuditService.class));
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class));
         KnowledgeSourceView result = service.replaceTags(
                 7L, 21L, new KnowledgeSourceTagsRequest(List.of("GC", "面试")));
 
@@ -149,7 +149,7 @@ class KnowledgeSourceServiceTest {
 
         KnowledgeSourceService service = new KnowledgeSourceService(
                 sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
-                mock(KnowledgeAuditService.class));
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class));
         KnowledgeSourceView result = service.replaceTags(
                 7L, 21L, new KnowledgeSourceTagsRequest(List.of("面试", "GC")));
 
@@ -172,7 +172,7 @@ class KnowledgeSourceServiceTest {
 
         KnowledgeSourceService service = new KnowledgeSourceService(
                 sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
-                mock(KnowledgeAuditService.class));
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class));
         List<KnowledgeSourceView> result = service.list(7L, 3L, null, "missing-tag");
 
         assertTrue(result.isEmpty());
@@ -195,7 +195,7 @@ class KnowledgeSourceServiceTest {
 
         KnowledgeSourceService service = new KnowledgeSourceService(
                 sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
-                mock(KnowledgeAuditService.class));
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class));
         List<KnowledgeSourceView> result = service.list(7L, 3L, null, "面试");
 
         assertEquals(1, result.size());

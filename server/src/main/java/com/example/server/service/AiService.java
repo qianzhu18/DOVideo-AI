@@ -46,6 +46,7 @@ public class AiService {
     private final RedissonClient redissonClient;
     private final StringRedisTemplate redisTemplate;
     private final ModeRegistry modeRegistry;
+    private final KnowledgeSegmentIndexService knowledgeSegmentIndexService;
 
     public AiService(MediaFileMapper mediaFileMapper,
                      VideoContextService videoContextService,
@@ -57,7 +58,8 @@ public class AiService {
                      TaskEventService taskEventService,
                      RedissonClient redissonClient,
                      StringRedisTemplate redisTemplate,
-                     ModeRegistry modeRegistry) {
+                     ModeRegistry modeRegistry,
+                     KnowledgeSegmentIndexService knowledgeSegmentIndexService) {
         this.mediaFileMapper = mediaFileMapper;
         this.videoContextService = videoContextService;
         this.longVideoContextService = longVideoContextService;
@@ -69,6 +71,7 @@ public class AiService {
         this.redissonClient = redissonClient;
         this.redisTemplate = redisTemplate;
         this.modeRegistry = modeRegistry;
+        this.knowledgeSegmentIndexService = knowledgeSegmentIndexService;
     }
 
     /** 兼容旧调用方:未指定模式时按 GENERAL 分析。 */
@@ -95,6 +98,7 @@ public class AiService {
             if (agentState != null && agentState.result() != null) {
                 persistResult(mediaFile, agentState);
                 telemetry.increment(traceId, "checkpointHits", 1);
+                indexKnowledge(mediaId);
                 return;
             }
 
@@ -115,6 +119,7 @@ public class AiService {
             persistResult(mediaFile, agentState);
             log.info("agent_analysis_completed traceId={} mediaId={} rounds={}",
                     traceId, mediaId, agentState.round());
+            indexKnowledge(mediaId);
         } catch (Exception e) {
             try {
                 checkpointService.saveFailure(mediaId, userGoal, resolvedMode, currentStage, e);
@@ -131,6 +136,19 @@ public class AiService {
         } finally {
             telemetry.flush(traceId);
             telemetry.clear();
+        }
+    }
+
+    /**
+     * Best-effort knowledge indexing after a successful analysis. Indexing problems must
+     * never fail the analysis itself — they are recorded on the source version instead.
+     */
+    private void indexKnowledge(Long mediaId) {
+        try {
+            knowledgeSegmentIndexService.indexMedia(mediaId);
+        } catch (RuntimeException e) {
+            knowledgeSegmentIndexService.markIndexFailed(mediaId, e.getMessage());
+            log.warn("knowledge_index_failed mediaId={}", mediaId, e);
         }
     }
 

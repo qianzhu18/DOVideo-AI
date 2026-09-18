@@ -121,6 +121,141 @@ public class QdrantVectorStore {
         }
     }
 
+    /**
+     * Writes knowledge-segment vectors carrying the ownership payload (userId, spaceId,
+     * segmentId, ...). Points are addressed by segment UUID so a rebuild of the same
+     * segment overwrites in place instead of duplicating.
+     */
+    public void upsertKnowledge(List<KnowledgePoint> points) {
+        if (!enabled || points.isEmpty()) return;
+        try {
+            ensureCollection(points.get(0).vector().size());
+            JSONArray array = new JSONArray();
+            for (KnowledgePoint point : points) {
+                JSONObject object = new JSONObject();
+                object.put("id", point.id());
+                object.put("vector", point.vector());
+                object.put("payload", point.payload());
+                array.add(object);
+            }
+            JSONObject body = new JSONObject();
+            body.put("points", array);
+            execute(new Request.Builder()
+                    .url(baseUrl + "/collections/" + collection + "/points?wait=true")
+                    .put(RequestBody.create(body.toString(), JSON_MEDIA_TYPE)));
+        } catch (RuntimeException e) {
+            collectionReady.set(false);
+            throw new IllegalStateException("Qdrant 知识向量写入失败", e);
+        }
+    }
+
+    /** Similarity search restricted to one user's knowledge space (and optional folder). */
+    public List<KnowledgeHit> searchKnowledge(List<Double> queryEmbedding,
+                                              Long userId,
+                                              Long spaceId,
+                                              Long collectionId,
+                                              int limit) {
+        if (!enabled || queryEmbedding.isEmpty()) return List.of();
+        try {
+            ensureCollection(queryEmbedding.size());
+            JSONArray must = new JSONArray();
+            must.add(matchCondition("userId", userId));
+            must.add(matchCondition("spaceId", spaceId));
+            if (collectionId != null) {
+                must.add(matchCondition("collectionId", collectionId));
+            }
+            JSONObject filter = new JSONObject();
+            filter.put("must", must);
+
+            JSONObject body = new JSONObject();
+            body.put("query", queryEmbedding);
+            body.put("filter", filter);
+            body.put("limit", limit);
+            body.put("with_payload", true);
+            String response = execute(new Request.Builder()
+                    .url(baseUrl + "/collections/" + collection + "/points/query")
+                    .post(RequestBody.create(body.toString(), JSON_MEDIA_TYPE)));
+
+            JSONObject result = JSON.parseObject(response).getJSONObject("result");
+            JSONArray points = result == null ? null : result.getJSONArray("points");
+            if (points == null) return List.of();
+            List<KnowledgeHit> hits = new ArrayList<>(points.size());
+            for (int i = 0; i < points.size(); i++) {
+                JSONObject point = points.getJSONObject(i);
+                JSONObject payload = point.getJSONObject("payload");
+                if (payload == null) continue;
+                hits.add(new KnowledgeHit(
+                        payload.getString("segmentId"),
+                        payload.getLong("sourceId"),
+                        payload.getLong("mediaId"),
+                        payload.getLongValue("startMs"),
+                        payload.getLongValue("endMs"),
+                        point.getDoubleValue("score")));
+            }
+            return hits;
+        } catch (RuntimeException e) {
+            collectionReady.set(false);
+            throw new IllegalStateException("Qdrant 知识检索失败", e);
+        }
+    }
+
+    /** Removes every vector derived from one source; used before a rebuild to avoid stale recall. */
+    public void deleteSource(Long sourceId) {
+        if (!enabled) return;
+        try {
+            JSONObject filter = new JSONObject();
+            filter.put("must", List.of(matchCondition("sourceId", sourceId)));
+            JSONObject body = new JSONObject();
+            body.put("filter", filter);
+            execute(new Request.Builder()
+                    .url(baseUrl + "/collections/" + collection + "/points/delete?wait=true")
+                    .post(RequestBody.create(body.toString(), JSON_MEDIA_TYPE)));
+        } catch (RuntimeException e) {
+            log.warn("qdrant_source_cleanup_failed sourceId={}", sourceId, e);
+        }
+    }
+
+    /**
+     * Re-stamps the location payload of one source after a move. Without this the points
+     * keep the old spaceId and become invisible to space-filtered search. A null collection
+     * id is removed from the payload instead of being written as null.
+     */
+    public void updateSourceLocation(Long sourceId, Long spaceId, Long collectionId) {
+        if (!enabled) return;
+        try {
+            JSONObject payload = new JSONObject();
+            payload.put("spaceId", spaceId);
+            if (collectionId != null) payload.put("collectionId", collectionId);
+            JSONObject filter = new JSONObject();
+            filter.put("must", List.of(matchCondition("sourceId", sourceId)));
+            JSONObject body = new JSONObject();
+            body.put("payload", payload);
+            body.put("filter", filter);
+            execute(new Request.Builder()
+                    .url(baseUrl + "/collections/" + collection + "/points/payload?wait=true")
+                    .post(RequestBody.create(body.toString(), JSON_MEDIA_TYPE)));
+            if (collectionId == null) {
+                JSONObject removal = new JSONObject();
+                removal.put("keys", List.of("collectionId"));
+                removal.put("filter", filter);
+                execute(new Request.Builder()
+                        .url(baseUrl + "/collections/" + collection + "/points/payload/delete?wait=true")
+                        .post(RequestBody.create(removal.toString(), JSON_MEDIA_TYPE)));
+            }
+        } catch (RuntimeException e) {
+            log.warn("qdrant_source_payload_update_failed sourceId={}", sourceId, e);
+        }
+    }
+
+    private JSONObject matchCondition(String key, Object value) {
+        JSONObject match = new JSONObject();
+        match.put("value", value);
+        JSONObject condition = new JSONObject();
+        condition.put("key", key);
+        condition.put("match", match);
+        return condition;
+    }
+
     public void deleteMedia(Long mediaId) {
         if (!enabled) return;
         try {
@@ -196,5 +331,14 @@ public class QdrantVectorStore {
     }
 
     public record VectorHit(long startMs, long endMs, double score) {
+    }
+
+    /** One knowledge-segment vector point ready for an upsert. */
+    public record KnowledgePoint(String id, List<Double> vector, JSONObject payload) {
+    }
+
+    /** Recall result of a knowledge-space search; evidence text lives in MySQL, not here. */
+    public record KnowledgeHit(String segmentId, Long sourceId, Long mediaId,
+                               long startMs, long endMs, double score) {
     }
 }
