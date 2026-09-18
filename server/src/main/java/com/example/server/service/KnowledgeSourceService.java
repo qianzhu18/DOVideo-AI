@@ -27,6 +27,11 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+/**
+ * Ownership-checked management of knowledge sources: location moves, tag sets and the
+ * soft-delete lifecycle. Every mutation writes a durable audit record; user-owned data
+ * is always guarded by {@link #requireOwnedSource}.
+ */
 @Service
 public class KnowledgeSourceService {
 
@@ -113,7 +118,8 @@ public class KnowledgeSourceService {
                 .ne("status", STATUS_DELETED)
                 .orderByDesc("updated_at");
         if (collectionId == null) {
-            // 根层级浏览只展示未归档来源；但带标签检索时是全空间语义，不能再叠加该约束。
+            // Root-level browsing lists only unfiled sources; a tag search is space-wide
+            // and must not inherit that constraint, otherwise filed sources become invisible.
             if (tag == null || tag.isBlank()) query.isNull("collection_id");
         } else {
             query.eq("collection_id", collectionId);
@@ -136,27 +142,43 @@ public class KnowledgeSourceService {
         return tagsForSources(List.of(source.getId())).getOrDefault(source.getId(), List.of());
     }
 
+    /**
+     * Replaces the tag set of a source with differential writes: only removed tags are
+     * deleted and only added tags are inserted, so unchanged rows keep their identity
+     * and the write volume stays proportional to the actual diff.
+     */
     @Transactional
     public KnowledgeSourceView replaceTags(Long userId, Long sourceId, KnowledgeSourceTagsRequest request) {
         KnowledgeSource source = requireOwnedSource(userId, sourceId);
         List<String> normalized = normalizeTags(request.tags());
-        Map<Long, List<String>> existing = tagsForSources(List.of(sourceId));
-        Set<String> current = new LinkedHashSet<>(existing.getOrDefault(sourceId, List.of()));
-        if (!current.equals(new LinkedHashSet<>(normalized))) {
-            tagMapper.delete(new QueryWrapper<KnowledgeSourceTag>().eq("source_id", sourceId));
-            for (String tag : normalized) {
-                KnowledgeSourceTag row = new KnowledgeSourceTag();
-                row.setSourceId(sourceId);
-                row.setTag(tag);
-                try {
-                    tagMapper.insert(row);
-                } catch (DuplicateKeyException error) {
-                    // 并发替换时另一请求已写入同一标签，最终集合仍由本次事务决定，跳过即可。
-                }
-            }
-            auditService.record(userId, "SOURCE_TAGGED", "SOURCE", source.getId(), source.getSpaceId(), source.getCollectionId(),
-                    "tags=" + String.join(",", normalized) + ";previous=" + String.join(",", current));
+        Set<String> requested = new LinkedHashSet<>(normalized);
+        Set<String> current = new LinkedHashSet<>(
+                tagsForSources(List.of(sourceId)).getOrDefault(sourceId, List.of()));
+        if (current.equals(requested)) {
+            return KnowledgeSourceView.from(source, List.copyOf(requested));
         }
+        Set<String> removed = new LinkedHashSet<>(current);
+        removed.removeAll(requested);
+        Set<String> added = new LinkedHashSet<>(requested);
+        added.removeAll(current);
+        if (!removed.isEmpty()) {
+            tagMapper.delete(new QueryWrapper<KnowledgeSourceTag>()
+                    .eq("source_id", sourceId)
+                    .in("tag", removed));
+        }
+        for (String tag : added) {
+            KnowledgeSourceTag row = new KnowledgeSourceTag();
+            row.setSourceId(sourceId);
+            row.setTag(tag);
+            try {
+                tagMapper.insert(row);
+            } catch (DuplicateKeyException error) {
+                // A concurrent replace already inserted this tag; the final set is still
+                // decided by this transaction, so the duplicate row can simply be skipped.
+            }
+        }
+        auditService.record(userId, "SOURCE_TAGGED", "SOURCE", source.getId(), source.getSpaceId(), source.getCollectionId(),
+                "added=" + String.join(",", added) + ";removed=" + String.join(",", removed));
         return KnowledgeSourceView.from(source, normalized);
     }
 

@@ -15,11 +15,13 @@ import com.example.server.mapper.KnowledgeSourceTagMapper;
 import com.example.server.mapper.KnowledgeSourceVersionMapper;
 import com.example.server.mapper.MediaFileMapper;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -131,6 +133,73 @@ class KnowledgeSourceServiceTest {
         assertEquals(List.of("GC", "面试"), result.tags());
         verify(tagMapper).delete(any());
         verify(tagMapper, times(2)).insert(any(KnowledgeSourceTag.class));
+    }
+
+    @Test
+    void replaceTagsWritesOnlyTheDifferentialWhenCommonTagsRemain() {
+        KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
+        KnowledgeSourceVersionMapper versionMapper = mock(KnowledgeSourceVersionMapper.class);
+        KnowledgeSourceTagMapper tagMapper = mock(KnowledgeSourceTagMapper.class);
+        MediaFileMapper mediaMapper = mock(MediaFileMapper.class);
+        KnowledgeSpaceService spaceService = mock(KnowledgeSpaceService.class);
+        KnowledgeCollectionService collectionService = mock(KnowledgeCollectionService.class);
+        KnowledgeSource source = ownedSource(21L, 7L);
+        when(sourceMapper.selectById(21L)).thenReturn(source);
+        when(tagMapper.selectList(any())).thenReturn(List.of(tagRow(21L, "JVM"), tagRow(21L, "面试")));
+
+        KnowledgeSourceService service = new KnowledgeSourceService(
+                sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
+                mock(KnowledgeAuditService.class));
+        KnowledgeSourceView result = service.replaceTags(
+                7L, 21L, new KnowledgeSourceTagsRequest(List.of("面试", "GC")));
+
+        assertEquals(List.of("面试", "GC"), result.tags());
+        ArgumentCaptor<KnowledgeSourceTag> inserted = ArgumentCaptor.forClass(KnowledgeSourceTag.class);
+        verify(tagMapper, times(1)).insert(inserted.capture());
+        assertEquals("GC", inserted.getValue().getTag());
+        verify(tagMapper, times(1)).delete(any());
+    }
+
+    @Test
+    void listWithTagFilterShortCircuitsWhenTagIsUnknown() {
+        KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
+        KnowledgeSourceVersionMapper versionMapper = mock(KnowledgeSourceVersionMapper.class);
+        KnowledgeSourceTagMapper tagMapper = mock(KnowledgeSourceTagMapper.class);
+        MediaFileMapper mediaMapper = mock(MediaFileMapper.class);
+        KnowledgeSpaceService spaceService = mock(KnowledgeSpaceService.class);
+        KnowledgeCollectionService collectionService = mock(KnowledgeCollectionService.class);
+        when(tagMapper.selectList(any())).thenReturn(List.of());
+
+        KnowledgeSourceService service = new KnowledgeSourceService(
+                sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
+                mock(KnowledgeAuditService.class));
+        List<KnowledgeSourceView> result = service.list(7L, 3L, null, "missing-tag");
+
+        assertTrue(result.isEmpty());
+        verify(sourceMapper, never()).selectList(any());
+    }
+
+    @Test
+    void listFillsTagsForReturnedSources() {
+        KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
+        KnowledgeSourceVersionMapper versionMapper = mock(KnowledgeSourceVersionMapper.class);
+        KnowledgeSourceTagMapper tagMapper = mock(KnowledgeSourceTagMapper.class);
+        MediaFileMapper mediaMapper = mock(MediaFileMapper.class);
+        KnowledgeSpaceService spaceService = mock(KnowledgeSpaceService.class);
+        KnowledgeCollectionService collectionService = mock(KnowledgeCollectionService.class);
+        KnowledgeSource source = ownedSource(21L, 7L);
+        when(tagMapper.selectList(any()))
+                .thenReturn(List.of(tagRow(21L, "面试")))
+                .thenReturn(List.of(tagRow(21L, "面试")));
+        when(sourceMapper.selectList(any())).thenReturn(List.of(source));
+
+        KnowledgeSourceService service = new KnowledgeSourceService(
+                sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
+                mock(KnowledgeAuditService.class));
+        List<KnowledgeSourceView> result = service.list(7L, 3L, null, "面试");
+
+        assertEquals(1, result.size());
+        assertEquals(List.of("面试"), result.get(0).tags());
     }
 
     @Test
