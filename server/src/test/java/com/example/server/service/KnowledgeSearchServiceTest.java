@@ -17,13 +17,14 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class KnowledgeSearchServiceTest {
 
     @Test
-    void searchPrefersVectorHitsAndBackfillsEvidence() {
+    void searchWithVectorStrategyRecallsFromVectorStoreOnly() {
         KnowledgeSpaceService spaceService = mock(KnowledgeSpaceService.class);
         KnowledgeCollectionService collectionService = mock(KnowledgeCollectionService.class);
         KnowledgeSegmentMapper segmentMapper = mock(KnowledgeSegmentMapper.class);
@@ -37,9 +38,10 @@ class KnowledgeSearchServiceTest {
         when(sourceMapper.selectById(9L)).thenReturn(source(9L, "课程回放.mp4"));
 
         KnowledgeSearchService service = new KnowledgeSearchService(
-                spaceService, collectionService, segmentMapper, sourceMapper, vectorStore, embeddingUtils);
+                spaceService, collectionService, segmentMapper, sourceMapper, vectorStore,
+                embeddingUtils, 0.5);
         List<KnowledgeSearchHit> hits = service.search(
-                7L, new KnowledgeSearchRequest(3L, null, "缓存击穿", 5));
+                7L, new KnowledgeSearchRequest(3L, null, "缓存击穿", 5, "vector"));
 
         assertEquals(1, hits.size());
         KnowledgeSearchHit hit = hits.get(0);
@@ -48,10 +50,11 @@ class KnowledgeSearchServiceTest {
         assertEquals(0L, hit.startMs());
         assertEquals("vector", hit.matchType());
         assertEquals("第一句", hit.transcript());
+        verify(segmentMapper, never()).selectList(any());
     }
 
     @Test
-    void searchFallsBackToKeywordRecallWhenVectorStoreFails() {
+    void searchWithHybridStrategyKeepsWorkingWhenVectorStoreFails() {
         KnowledgeSpaceService spaceService = mock(KnowledgeSpaceService.class);
         KnowledgeCollectionService collectionService = mock(KnowledgeCollectionService.class);
         KnowledgeSegmentMapper segmentMapper = mock(KnowledgeSegmentMapper.class);
@@ -66,14 +69,43 @@ class KnowledgeSearchServiceTest {
         when(segmentMapper.selectList(any())).thenReturn(List.of(segment("seg-2")));
 
         KnowledgeSearchService service = new KnowledgeSearchService(
-                spaceService, collectionService, segmentMapper, sourceMapper, vectorStore, embeddingUtils);
+                spaceService, collectionService, segmentMapper, sourceMapper, vectorStore,
+                embeddingUtils, 0.5);
         List<KnowledgeSearchHit> hits = service.search(
-                7L, new KnowledgeSearchRequest(3L, null, "缓存击穿怎么处理", 5));
+                7L, new KnowledgeSearchRequest(3L, null, "缓存击穿怎么处理", 5, "hybrid"));
 
         assertEquals(1, hits.size());
-        assertEquals("keyword", hits.get(0).matchType());
+        assertEquals("hybrid", hits.get(0).matchType());
         assertEquals("seg-2", hits.get(0).segmentId());
-        verify(vectorStore).searchKnowledge(any(), anyLong(), anyLong(), any(), anyInt());
+    }
+
+    @Test
+    void hybridFusionRanksDualChannelHitsFirst() {
+        KnowledgeSpaceService spaceService = mock(KnowledgeSpaceService.class);
+        KnowledgeCollectionService collectionService = mock(KnowledgeCollectionService.class);
+        KnowledgeSegmentMapper segmentMapper = mock(KnowledgeSegmentMapper.class);
+        KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
+        QdrantVectorStore vectorStore = mock(QdrantVectorStore.class);
+        EmbeddingUtils embeddingUtils = mock(EmbeddingUtils.class);
+        when(embeddingUtils.embed(any(String.class))).thenReturn(List.of(0.1, 0.2));
+        when(vectorStore.searchKnowledge(any(), anyLong(), anyLong(), any(), anyInt()))
+                .thenReturn(List.of(
+                        new QdrantVectorStore.KnowledgeHit("seg-vec", 9L, 5L, 0L, 60_000L, 0.9),
+                        new QdrantVectorStore.KnowledgeHit("seg-both", 9L, 5L, 60_000L, 120_000L, 0.8)));
+        when(sourceMapper.selectList(any())).thenReturn(List.of(source(9L, "课程回放.mp4")));
+        when(sourceMapper.selectById(9L)).thenReturn(source(9L, "课程回放.mp4"));
+        when(segmentMapper.selectList(any())).thenReturn(List.of(segment("seg-both"), segment("seg-kw")));
+        when(segmentMapper.selectBatchIds(any())).thenReturn(List.of(
+                segment("seg-vec"), segment("seg-both"), segment("seg-kw")));
+
+        KnowledgeSearchService service = new KnowledgeSearchService(
+                spaceService, collectionService, segmentMapper, sourceMapper, vectorStore,
+                embeddingUtils, 0.5);
+        List<KnowledgeSearchHit> hits = service.search(
+                7L, new KnowledgeSearchRequest(3L, null, "缓存击穿", 5, "hybrid"));
+
+        assertEquals(3, hits.size());
+        assertEquals("seg-both", hits.get(0).segmentId());
     }
 
     @Test
@@ -91,11 +123,40 @@ class KnowledgeSearchServiceTest {
         when(segmentMapper.selectList(any())).thenReturn(List.of());
 
         KnowledgeSearchService service = new KnowledgeSearchService(
-                spaceService, collectionService, segmentMapper, sourceMapper, vectorStore, embeddingUtils);
+                spaceService, collectionService, segmentMapper, sourceMapper, vectorStore,
+                embeddingUtils, 0.5);
         List<KnowledgeSearchHit> hits = service.search(
-                7L, new KnowledgeSearchRequest(3L, null, "完全无关的问题", 5));
+                7L, new KnowledgeSearchRequest(3L, null, "完全无关的问题", 5, "hybrid"));
 
         assertTrue(hits.isEmpty());
+    }
+
+    @Test
+    void vectorStrategyDropsHitsBelowRelevanceThreshold() {
+        KnowledgeSpaceService spaceService = mock(KnowledgeSpaceService.class);
+        KnowledgeCollectionService collectionService = mock(KnowledgeCollectionService.class);
+        KnowledgeSegmentMapper segmentMapper = mock(KnowledgeSegmentMapper.class);
+        KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
+        QdrantVectorStore vectorStore = mock(QdrantVectorStore.class);
+        EmbeddingUtils embeddingUtils = mock(EmbeddingUtils.class);
+        when(embeddingUtils.embed(any(String.class))).thenReturn(List.of(0.1, 0.2));
+        when(vectorStore.searchKnowledge(any(), anyLong(), anyLong(), any(), anyInt()))
+                .thenReturn(List.of(
+                        new QdrantVectorStore.KnowledgeHit("seg-strong", 9L, 5L, 0L, 60_000L, 0.61),
+                        new QdrantVectorStore.KnowledgeHit("seg-weak", 9L, 5L, 60_000L, 120_000L, 0.37)));
+        when(segmentMapper.selectBatchIds(any())).thenReturn(List.of(
+                segment("seg-strong"), segment("seg-weak")));
+        when(sourceMapper.selectById(9L)).thenReturn(source(9L, "课程回放.mp4"));
+
+        KnowledgeSearchService service = new KnowledgeSearchService(
+                spaceService, collectionService, segmentMapper, sourceMapper, vectorStore,
+                embeddingUtils, 0.5);
+        List<KnowledgeSearchHit> hits = service.search(
+                7L, new KnowledgeSearchRequest(3L, null, "缓存击穿", 5, "vector"));
+
+        assertEquals(1, hits.size());
+        assertEquals("seg-strong", hits.get(0).segmentId());
+        assertTrue(hits.get(0).score() >= 0.5);
     }
 
     private static KnowledgeSegment segment(String id) {

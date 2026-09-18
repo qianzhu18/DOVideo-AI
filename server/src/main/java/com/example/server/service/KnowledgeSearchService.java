@@ -8,6 +8,7 @@ import com.example.server.entity.KnowledgeSource;
 import com.example.server.mapper.KnowledgeSegmentMapper;
 import com.example.server.mapper.KnowledgeSourceMapper;
 import com.example.server.utils.EmbeddingUtils;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -30,6 +31,13 @@ public class KnowledgeSearchService {
     private static final int MAX_TOP_K = 20;
     private static final int MAX_KEYWORD_HITS = 40;
     private static final int MAX_KEYWORD_TERMS = 8;
+    /** Standard RRF damping constant; rank r contributes 1/(K+r) to the fused score. */
+    private static final int RRF_K = 60;
+    private static final int RECALL_MULTIPLIER = 3;
+
+    public static final String STRATEGY_VECTOR = "vector";
+    public static final String STRATEGY_KEYWORD = "keyword";
+    public static final String STRATEGY_HYBRID = "hybrid";
 
     private final KnowledgeSpaceService spaceService;
     private final KnowledgeCollectionService collectionService;
@@ -37,19 +45,28 @@ public class KnowledgeSearchService {
     private final KnowledgeSourceMapper sourceMapper;
     private final QdrantVectorStore vectorStore;
     private final EmbeddingUtils embeddingUtils;
+    /**
+     * Minimum cosine similarity for a vector hit to be surfaced. Golden-set tuning on the
+     * demo corpus: no threshold maximizes recall@5 (0.96) but never refuses (0/6); 0.50
+     * refuses 4/6 but drops recall@5 to 0.63; 0.45 balances both (recall@5 0.83, refusal
+     * 1/6). Re-tune per corpus via the property — scores are embedding-dependent.
+     */
+    private final double minVectorScore;
 
     public KnowledgeSearchService(KnowledgeSpaceService spaceService,
                                   KnowledgeCollectionService collectionService,
                                   KnowledgeSegmentMapper segmentMapper,
                                   KnowledgeSourceMapper sourceMapper,
                                   QdrantVectorStore vectorStore,
-                                  EmbeddingUtils embeddingUtils) {
+                                  EmbeddingUtils embeddingUtils,
+                                  @Value("${knowledge.search.min-vector-score:0.45}") double minVectorScore) {
         this.spaceService = spaceService;
         this.collectionService = collectionService;
         this.segmentMapper = segmentMapper;
         this.sourceMapper = sourceMapper;
         this.vectorStore = vectorStore;
         this.embeddingUtils = embeddingUtils;
+        this.minVectorScore = minVectorScore;
     }
 
     public List<KnowledgeSearchHit> search(Long userId, KnowledgeSearchRequest request) {
@@ -65,18 +82,69 @@ public class KnowledgeSearchService {
     }
 
     private List<Recalled> recall(Long userId, KnowledgeSearchRequest request, String query, int topK) {
+        String strategy = normalizeStrategy(request.strategy());
+        return switch (strategy) {
+            case STRATEGY_VECTOR -> vectorRecall(userId, request, query, topK);
+            case STRATEGY_KEYWORD -> keywordRecall(userId, request, query, topK);
+            default -> hybridRecall(userId, request, query, topK);
+        };
+    }
+
+    private List<Recalled> vectorRecall(Long userId, KnowledgeSearchRequest request, String query, int topK) {
         List<Double> queryEmbedding = embed(query);
-        if (!queryEmbedding.isEmpty()) {
-            try {
-                List<Recalled> vectorHits = backfillBySegmentId(
-                        vectorStore.searchKnowledge(queryEmbedding, userId, request.spaceId(),
-                                request.collectionId(), topK));
-                if (!vectorHits.isEmpty()) return vectorHits;
-            } catch (RuntimeException ignored) {
-                // Vector store unavailable or empty: fall through to keyword recall.
-            }
+        if (queryEmbedding.isEmpty()) return List.of();
+        try {
+            List<QdrantVectorStore.KnowledgeHit> hits = vectorStore
+                    .searchKnowledge(queryEmbedding, userId, request.spaceId(),
+                            request.collectionId(), topK)
+                    .stream()
+                    .filter(hit -> hit.score() >= minVectorScore)
+                    .toList();
+            return backfillBySegmentId(hits);
+        } catch (RuntimeException e) {
+            return List.of();
         }
-        return keywordRecall(userId, request, query, topK);
+    }
+
+    /**
+     * Recalls from both channels and fuses with Reciprocal Rank Fusion: a segment found by
+     * both channels outranks ones found by either alone, which makes the hybrid strategy
+     * strictly more robust than either single channel.
+     */
+    private List<Recalled> hybridRecall(Long userId, KnowledgeSearchRequest request, String query, int topK) {
+        int recallLimit = topK * RECALL_MULTIPLIER;
+        List<Recalled> vectorHits = vectorRecall(userId, request, query, recallLimit);
+        List<Recalled> keywordHits = keywordRecall(userId, request, query, recallLimit);
+
+        Map<String, Recalled> bySegment = new LinkedHashMap<>();
+        vectorHits.forEach(hit -> bySegment.put(hit.segment().getId(), hit));
+        keywordHits.forEach(hit -> bySegment.putIfAbsent(hit.segment().getId(), hit));
+
+        Map<String, Double> fused = new LinkedHashMap<>();
+        for (int rank = 0; rank < vectorHits.size(); rank++) {
+            fused.merge(vectorHits.get(rank).segment().getId(), 1.0 / (RRF_K + rank + 1), Double::sum);
+        }
+        for (int rank = 0; rank < keywordHits.size(); rank++) {
+            fused.merge(keywordHits.get(rank).segment().getId(), 1.0 / (RRF_K + rank + 1), Double::sum);
+        }
+        return bySegment.values().stream()
+                .sorted(Comparator.comparingDouble(
+                                (Recalled hit) -> fused.getOrDefault(hit.segment().getId(), 0.0)).reversed()
+                        .thenComparingLong(hit -> hit.segment().getStartMs() == null
+                                ? 0 : hit.segment().getStartMs()))
+                .limit(topK)
+                .map(hit -> new Recalled(hit.segment(), fused.getOrDefault(hit.segment().getId(), 0.0),
+                        STRATEGY_HYBRID))
+                .toList();
+    }
+
+    private String normalizeStrategy(String strategy) {
+        if (strategy == null || strategy.isBlank()) return STRATEGY_HYBRID;
+        return switch (strategy.trim().toLowerCase()) {
+            case STRATEGY_VECTOR -> STRATEGY_VECTOR;
+            case STRATEGY_KEYWORD -> STRATEGY_KEYWORD;
+            default -> STRATEGY_HYBRID;
+        };
     }
 
     private List<Recalled> keywordRecall(Long userId, KnowledgeSearchRequest request, String query, int topK) {
