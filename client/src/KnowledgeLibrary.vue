@@ -112,6 +112,39 @@
             </div>
           </header>
 
+          <form class="cross-search" @submit.prevent="searchKnowledge">
+            <div class="cross-search-row">
+              <input
+                v-model="searchQuery"
+                maxlength="500"
+                placeholder="跨视频提问，例如：这个空间里讲过哪些要点？"
+                aria-label="跨视频检索"
+              />
+              <button type="submit" class="lime-button" :disabled="searching || !searchQuery.trim()">
+                {{ searching ? '检索中…' : '检索' }}
+              </button>
+            </div>
+            <p v-if="searchError" class="cross-search-error" role="alert">{{ searchError }}</p>
+          </form>
+
+          <section v-if="searched" class="search-results" aria-label="跨视频检索结果">
+            <header class="search-results-head">
+              <span>检索结果</span>
+              <button type="button" class="subtle-button" @click="closeSearchResults">收起</button>
+            </header>
+            <p v-if="searchResults.length === 0" class="search-empty">未检索到支持证据。</p>
+            <ul v-else class="search-hit-list">
+              <li v-for="hit in searchResults" :key="hit.segmentId" class="search-hit">
+                <div class="search-hit-meta">
+                  <strong :title="hit.title">{{ hit.title }}</strong>
+                  <span class="search-hit-time">{{ formatMs(hit.startMs) }} – {{ formatMs(hit.endMs) }}</span>
+                  <span class="search-hit-kind">{{ hit.matchType === 'vector' ? '语义' : '关键词' }}</span>
+                </div>
+                <p>{{ hit.transcript || hit.ocrText || hit.summary }}</p>
+              </li>
+            </ul>
+          </section>
+
           <div v-if="loading" class="knowledge-loading" role="status">正在读取知识资产...</div>
           <div v-else-if="sources.length === 0" class="source-empty">
             <p class="empty-index">000</p>
@@ -213,6 +246,11 @@ const moveCollections = ref([])
 const tagFilter = ref('')
 const tagEditorId = ref(null)
 const newTagDraft = ref('')
+const searchQuery = ref('')
+const searching = ref(false)
+const searched = ref(false)
+const searchResults = ref([])
+const searchError = ref('')
 
 const selectedSpace = computed(() => spaces.value.find(space => space.id === selectedSpaceId.value) || null)
 const selectedCollection = computed(() => collections.value.find(collection => collection.id === selectedCollectionId.value) || null)
@@ -423,6 +461,38 @@ function applyTagFilter() {
   refreshCurrent()
 }
 
+async function searchKnowledge() {
+  const query = searchQuery.value.trim()
+  if (!query || !selectedSpaceId.value) return
+  searching.value = true
+  searchError.value = ''
+  try {
+    const hits = await request('/knowledge/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ spaceId: selectedSpaceId.value, query, topK: 8 })
+    })
+    searchResults.value = hits
+    searched.value = true
+  } catch (cause) {
+    searchError.value = cause.message || '跨视频检索失败'
+  } finally {
+    searching.value = false
+  }
+}
+
+function closeSearchResults() {
+  searched.value = false
+  searchResults.value = []
+}
+
+function formatMs(value) {
+  const totalSeconds = Math.max(0, Math.floor((value || 0) / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = String(totalSeconds % 60).padStart(2, '0')
+  return `${minutes}:${seconds}`
+}
+
 async function clearTagFilter() {
   if (!tagFilter.value) return
   tagFilter.value = ''
@@ -539,6 +609,23 @@ function formatDate(value) {
 .tag-editor { display: flex; gap: 7px; margin-top: 8px; max-width: 340px; }
 .tag-editor input { flex: 1; border: 1px solid var(--border-tech); border-radius: 0; background: #090a0d; color: var(--text-main); padding: 7px 9px; font: .72rem/1.2 monospace; outline: none; }
 .tag-editor input:focus { border-color: var(--accent-lime); }
+.cross-search { margin: 0 0 20px; }
+.cross-search-row { display: flex; gap: 10px; }
+.cross-search-row input { flex: 1; border: 1px solid var(--border-tech); border-radius: 0; background: #090a0d; color: var(--text-main); padding: 10px 12px; font: .8rem/1.4 'Noto Sans SC', sans-serif; outline: none; }
+.cross-search-row input:focus { border-color: var(--accent-lime); }
+.cross-search .lime-button { min-height: 42px; padding: 0 18px; font-size: .8rem; }
+.cross-search-error { margin: 8px 0 0; color: #ff6876; font: .72rem/1.5 monospace; }
+.search-results { margin-bottom: 24px; border: 1px solid rgba(197,249,70,.3); background: rgba(197,249,70,.035); }
+.search-results-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 13px; border-bottom: 1px solid rgba(197,249,70,.25); color: var(--accent-lime); font: .7rem/1 monospace; letter-spacing: .1em; text-transform: uppercase; }
+.search-empty { padding: 16px 13px; color: var(--text-sub); font: .78rem/1.6 monospace; }
+.search-hit-list { list-style: none; margin: 0; padding: 0; }
+.search-hit { padding: 13px; border-bottom: 1px solid rgba(42,45,53,.8); }
+.search-hit:last-child { border-bottom: 0; }
+.search-hit-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px; margin-bottom: 6px; }
+.search-hit-meta strong { overflow: hidden; max-width: 340px; text-overflow: ellipsis; white-space: nowrap; font-size: .82rem; }
+.search-hit-time { color: var(--accent-lime); font: .7rem/1 monospace; }
+.search-hit-kind { padding: 2px 6px; border: 1px solid rgba(197,249,70,.35); color: var(--text-sub); font: .62rem/1.2 monospace; }
+.search-hit p { margin: 0; color: var(--text-sub); font-size: .8rem; line-height: 1.7; }
 .knowledge-loading { min-height: 250px; display: grid; place-items: center; color: var(--text-sub); font: .82rem monospace; }
 .source-empty { min-height: 300px; display: grid; align-content: center; justify-items: start; max-width: 490px; }
 .empty-index { color: var(--accent-lime); font: 700 2.5rem/.9 'Syncopate', monospace; opacity: .8; }
