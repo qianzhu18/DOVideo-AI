@@ -11,6 +11,11 @@
           <span class="beta-badge">PRO</span>
         </div>
 
+        <nav class="product-switcher" aria-label="产品视图">
+          <button type="button" :class="{ active: activeView === 'workspace' }" @click="activeView = 'workspace'">视频工作台</button>
+          <button type="button" :class="{ active: activeView === 'knowledge' }" @click="activeView = 'knowledge'">知识库</button>
+        </nav>
+
         <div class="nav-controls">
           <button v-if="!currentUser" class="auth-btn" @click="openAuthModal">
             <span class="btn-icon">
@@ -34,7 +39,7 @@
       </div>
     </header>
 
-    <main class="main-container">
+    <main v-show="activeView === 'workspace'" class="main-container">
       <section class="hero-section">
         <h1 class="slogan-main">DECODE YOUR VIDEO</h1>
         <p class="slogan-sub">影视重构 · 算力赋能</p>
@@ -487,6 +492,7 @@
         </div>
       </div>
     </main>
+    <KnowledgeLibrary v-if="activeView === 'knowledge'" :user="currentUser" @request-login="openAuthModal" />
   </div>
 </template>
 
@@ -504,6 +510,7 @@ import {
 import { DEMO_ITEM } from './demoData'
 import { createTaskStreams } from './taskEvents'
 import { useAnalysisWorkspace } from './useAnalysisWorkspace'
+import KnowledgeLibrary from './KnowledgeLibrary.vue'
 
 // --- 变量定义 ---
 const DEMO_MODE = new URLSearchParams(window.location.search).has('demo')
@@ -534,6 +541,7 @@ const visibleList = computed(() => {
 })
 const isDragOver = ref(false)
 const currentUser = ref(null)
+const activeView = ref('workspace')
 const showAuthModal = ref(false)
 const authMode = ref('login')
 const authLoading = ref(false)
@@ -1370,6 +1378,11 @@ html, body, #app {
 .brand-do { font-family: 'Dela Gothic One', sans-serif; font-size: 1.8rem; color: var(--text-main); letter-spacing: -1px; }
 .brand-video { font-family: 'Space Grotesk', sans-serif; font-size: 1.8rem; font-weight: 300; }
 .beta-badge { font-size: 0.7rem; font-weight: 700; background: var(--accent-lime); color: var(--text-inverse); padding: 2px 6px; border-radius: 2px; margin-left: 8px; transform: translateY(-4px); box-shadow: 0 0 5px var(--accent-lime); }
+.product-switcher { display: flex; align-self: stretch; align-items: stretch; margin-left: auto; margin-right: 26px; }
+.product-switcher button { position: relative; min-height: 40px; padding: 0 13px; border: 0; background: transparent; color: var(--text-sub); cursor: pointer; font: 700 .76rem/1 'Noto Sans SC', monospace; }
+.product-switcher button:hover { color: var(--text-main); }
+.product-switcher button.active { color: var(--accent-lime); }
+.product-switcher button.active::after { position: absolute; right: 13px; bottom: -1.2rem; left: 13px; height: 2px; background: var(--accent-lime); content: ''; box-shadow: 0 0 8px rgba(197,249,70,.5); }
 
 .nav-controls { display: flex; align-items: center; gap: 15px; }
 .auth-btn { background: transparent; border: 1px solid var(--border-tech); color: var(--accent-lime); padding: 6px 16px; border-radius: 4px; font-family: 'Noto Sans SC', sans-serif; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: all 0.3s; font-size: 0.85rem; }
@@ -1676,6 +1689,10 @@ html, body, #app {
   .navbar { padding: 0.8rem 0; }
   .nav-content { padding: 0 1rem; }
   .brand-do, .brand-video { font-size: 1.25rem; }
+  .product-switcher { order: 3; width: 100%; margin: 7px 0 -4px; }
+  .nav-content { flex-wrap: wrap; }
+  .product-switcher button { padding: 0 10px; }
+  .product-switcher button.active::after { bottom: -0.8rem; left: 10px; right: 10px; }
   .status-pill { display: none; }
   .auth-btn { padding: 6px 10px; }
   .main-container { padding: 2.5rem 1rem; }
