@@ -33,7 +33,7 @@ class KnowledgeSpaceServiceTest {
             return 1;
         });
 
-        KnowledgeSpaceService service = new KnowledgeSpaceService(mapper);
+        KnowledgeSpaceService service = new KnowledgeSpaceService(mapper, mock(KnowledgeAuditService.class));
         KnowledgeSpaceView created = service.create(7L,
                 new KnowledgeSpaceCreateRequest("  Java 课程  ", " JVM / 并发 "));
 
@@ -49,7 +49,7 @@ class KnowledgeSpaceServiceTest {
         when(mapper.selectOne(any())).thenReturn(space(1L, 7L, KnowledgeSpaceService.DEFAULT_SPACE_NAME, true));
         when(mapper.selectCount(any())).thenReturn(1L);
 
-        KnowledgeSpaceService service = new KnowledgeSpaceService(mapper);
+        KnowledgeSpaceService service = new KnowledgeSpaceService(mapper, mock(KnowledgeAuditService.class));
         BusinessException error = assertThrows(BusinessException.class,
                 () -> service.create(7L, new KnowledgeSpaceCreateRequest("Java", "")));
 
@@ -61,7 +61,7 @@ class KnowledgeSpaceServiceTest {
         KnowledgeSpaceMapper mapper = mock(KnowledgeSpaceMapper.class);
         when(mapper.selectById(5L)).thenReturn(space(5L, 8L, "Java", false));
 
-        KnowledgeSpaceService service = new KnowledgeSpaceService(mapper);
+        KnowledgeSpaceService service = new KnowledgeSpaceService(mapper, mock(KnowledgeAuditService.class));
         assertThrows(SecurityException.class,
                 () -> service.update(7L, 5L, new KnowledgeSpaceUpdateRequest("Python", null)));
     }
@@ -71,7 +71,7 @@ class KnowledgeSpaceServiceTest {
         KnowledgeSpaceMapper mapper = mock(KnowledgeSpaceMapper.class);
         when(mapper.selectById(1L)).thenReturn(space(1L, 7L, KnowledgeSpaceService.DEFAULT_SPACE_NAME, true));
 
-        KnowledgeSpaceService service = new KnowledgeSpaceService(mapper);
+        KnowledgeSpaceService service = new KnowledgeSpaceService(mapper, mock(KnowledgeAuditService.class));
         BusinessException error = assertThrows(BusinessException.class,
                 () -> service.update(7L, 1L, new KnowledgeSpaceUpdateRequest("学习", null)));
 

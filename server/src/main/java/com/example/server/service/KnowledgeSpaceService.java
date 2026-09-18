@@ -21,9 +21,12 @@ public class KnowledgeSpaceService {
     private static final String DEFAULT_SPACE_DESCRIPTION = "系统默认知识空间";
 
     private final KnowledgeSpaceMapper knowledgeSpaceMapper;
+    private final KnowledgeAuditService auditService;
 
-    public KnowledgeSpaceService(KnowledgeSpaceMapper knowledgeSpaceMapper) {
+    public KnowledgeSpaceService(KnowledgeSpaceMapper knowledgeSpaceMapper,
+                                 KnowledgeAuditService auditService) {
         this.knowledgeSpaceMapper = knowledgeSpaceMapper;
+        this.auditService = auditService;
     }
 
     public List<KnowledgeSpaceView> listOwnedSpaces(Long userId) {
@@ -55,6 +58,8 @@ public class KnowledgeSpaceService {
         } catch (DuplicateKeyException error) {
             throw new BusinessException(ErrorCode.CONFLICT, "已存在同名知识空间");
         }
+        auditService.record(userId, "SPACE_CREATED", "SPACE", space.getId(), space.getId(), null,
+                "name=" + space.getName());
         return KnowledgeSpaceView.from(space);
     }
 
@@ -82,6 +87,8 @@ public class KnowledgeSpaceService {
         } catch (DuplicateKeyException error) {
             throw new BusinessException(ErrorCode.CONFLICT, "已存在同名知识空间");
         }
+        auditService.record(userId, "SPACE_UPDATED", "SPACE", space.getId(), space.getId(), null,
+                "name=" + space.getName());
         return KnowledgeSpaceView.from(space);
     }
 
@@ -97,6 +104,8 @@ public class KnowledgeSpaceService {
         candidate.setSystemDefault(true);
         try {
             knowledgeSpaceMapper.insert(candidate);
+            auditService.record(userId, "SPACE_DEFAULT_CREATED", "SPACE", candidate.getId(), candidate.getId(), null,
+                    "name=" + DEFAULT_SPACE_NAME);
             return candidate;
         } catch (DuplicateKeyException error) {
             KnowledgeSpace concurrent = findDefaultSpace(userId);

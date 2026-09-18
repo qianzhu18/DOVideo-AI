@@ -25,13 +25,16 @@ public class KnowledgeCollectionService {
     private final KnowledgeCollectionMapper collectionMapper;
     private final KnowledgeSourceMapper sourceMapper;
     private final KnowledgeSpaceService spaceService;
+    private final KnowledgeAuditService auditService;
 
     public KnowledgeCollectionService(KnowledgeCollectionMapper collectionMapper,
                                       KnowledgeSourceMapper sourceMapper,
-                                      KnowledgeSpaceService spaceService) {
+                                      KnowledgeSpaceService spaceService,
+                                      KnowledgeAuditService auditService) {
         this.collectionMapper = collectionMapper;
         this.sourceMapper = sourceMapper;
         this.spaceService = spaceService;
+        this.auditService = auditService;
     }
 
     public List<KnowledgeCollectionView> list(Long userId, Long spaceId) {
@@ -66,6 +69,8 @@ public class KnowledgeCollectionService {
         } catch (DuplicateKeyException error) {
             throw new BusinessException(ErrorCode.CONFLICT, "同一知识空间中已存在该目录路径");
         }
+        auditService.record(userId, "COLLECTION_CREATED", "COLLECTION", collection.getId(), collection.getSpaceId(),
+                collection.getId(), "path=" + collection.getPath());
         return KnowledgeCollectionView.from(collection);
     }
 
@@ -105,6 +110,8 @@ public class KnowledgeCollectionService {
         } catch (DuplicateKeyException error) {
             throw new BusinessException(ErrorCode.CONFLICT, "同一知识空间中已存在该目录路径");
         }
+        auditService.record(userId, "COLLECTION_UPDATED", "COLLECTION", collection.getId(), collection.getSpaceId(),
+                collection.getId(), "from=" + oldPath + ";to=" + collection.getPath());
         return KnowledgeCollectionView.from(collection);
     }
 
@@ -119,6 +126,8 @@ public class KnowledgeCollectionService {
                 .ne("status", "DELETED"));
         if (sourceCount > 0) throw new BusinessException(ErrorCode.CONFLICT, "请先移动目录中的内容源");
         collectionMapper.deleteById(collection.getId());
+        auditService.record(userId, "COLLECTION_DELETED", "COLLECTION", collection.getId(), collection.getSpaceId(),
+                collection.getId(), "path=" + collection.getPath());
     }
 
     public KnowledgeCollection requireOwnedCollection(Long userId, Long collectionId) {

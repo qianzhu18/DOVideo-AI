@@ -37,7 +37,7 @@ class KnowledgeSourceServiceTest {
         when(versionMapper.insert(any(KnowledgeSourceVersion.class))).thenAnswer(invocation -> 1);
 
         KnowledgeSourceService service = new KnowledgeSourceService(
-                sourceMapper, versionMapper, mediaMapper, spaceService, collectionService);
+                sourceMapper, versionMapper, mediaMapper, spaceService, collectionService, mock(KnowledgeAuditService.class));
         KnowledgeSource source = service.ensureMediaSource(media(9L, 7L, "jvm.mp4", "aabb"));
 
         assertEquals(21L, source.getId());
@@ -66,7 +66,7 @@ class KnowledgeSourceServiceTest {
         when(collectionService.requireCollectionInSpace(31L, 5L)).thenReturn(collection);
 
         KnowledgeSourceService service = new KnowledgeSourceService(
-                sourceMapper, versionMapper, mediaMapper, spaceService, collectionService);
+                sourceMapper, versionMapper, mediaMapper, spaceService, collectionService, mock(KnowledgeAuditService.class));
         KnowledgeSourceView moved = service.move(7L, 21L, new KnowledgeSourceLocationRequest(5L, 31L));
 
         assertEquals(5L, moved.spaceId());

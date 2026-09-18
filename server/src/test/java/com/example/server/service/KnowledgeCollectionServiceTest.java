@@ -35,7 +35,8 @@ class KnowledgeCollectionServiceTest {
             return 1;
         });
 
-        KnowledgeCollectionService service = new KnowledgeCollectionService(collectionMapper, sourceMapper, spaceService);
+        KnowledgeCollectionService service = new KnowledgeCollectionService(
+                collectionMapper, sourceMapper, spaceService, mock(KnowledgeAuditService.class));
         KnowledgeCollectionView view = service.create(7L, 3L,
                 new KnowledgeCollectionCreateRequest(null, " Java ", null));
 
@@ -56,7 +57,8 @@ class KnowledgeCollectionServiceTest {
         foreignParent.setPath("/Other");
         when(collectionMapper.selectById(eq(9L))).thenReturn(foreignParent);
 
-        KnowledgeCollectionService service = new KnowledgeCollectionService(collectionMapper, sourceMapper, spaceService);
+        KnowledgeCollectionService service = new KnowledgeCollectionService(
+                collectionMapper, sourceMapper, spaceService, mock(KnowledgeAuditService.class));
         BusinessException error = assertThrows(BusinessException.class,
                 () -> service.create(7L, 3L, new KnowledgeCollectionCreateRequest(9L, "JVM", 0)));
 

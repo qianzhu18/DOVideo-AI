@@ -31,17 +31,20 @@ public class KnowledgeSourceService {
     private final MediaFileMapper mediaFileMapper;
     private final KnowledgeSpaceService spaceService;
     private final KnowledgeCollectionService collectionService;
+    private final KnowledgeAuditService auditService;
 
     public KnowledgeSourceService(KnowledgeSourceMapper sourceMapper,
                                   KnowledgeSourceVersionMapper versionMapper,
                                   MediaFileMapper mediaFileMapper,
                                   KnowledgeSpaceService spaceService,
-                                  KnowledgeCollectionService collectionService) {
+                                  KnowledgeCollectionService collectionService,
+                                  KnowledgeAuditService auditService) {
         this.sourceMapper = sourceMapper;
         this.versionMapper = versionMapper;
         this.mediaFileMapper = mediaFileMapper;
         this.spaceService = spaceService;
         this.collectionService = collectionService;
+        this.auditService = auditService;
     }
 
     @Transactional
@@ -73,6 +76,8 @@ public class KnowledgeSourceService {
         version.setContentHash(media.getContentHash());
         version.setStatus(STATUS_PENDING);
         versionMapper.insert(version);
+        auditService.record(media.getUserId(), "SOURCE_CREATED", "SOURCE", source.getId(), source.getSpaceId(), null,
+                "type=" + SOURCE_TYPE_VIDEO + ";mediaId=" + media.getId());
         return source;
     }
 
@@ -101,6 +106,8 @@ public class KnowledgeSourceService {
     @Transactional
     public KnowledgeSourceView move(Long userId, Long sourceId, KnowledgeSourceLocationRequest request) {
         KnowledgeSource source = requireOwnedSource(userId, sourceId);
+        Long previousSpaceId = source.getSpaceId();
+        Long previousCollectionId = source.getCollectionId();
         spaceService.requireOwnedSpace(userId, request.spaceId());
         KnowledgeCollection collection = request.collectionId() == null
                 ? null
@@ -108,6 +115,8 @@ public class KnowledgeSourceService {
         source.setSpaceId(request.spaceId());
         source.setCollectionId(collection == null ? null : collection.getId());
         sourceMapper.updateById(source);
+        auditService.record(userId, "SOURCE_MOVED", "SOURCE", source.getId(), source.getSpaceId(), source.getCollectionId(),
+                "fromSpace=" + previousSpaceId + ";fromCollection=" + previousCollectionId);
         return KnowledgeSourceView.from(source);
     }
 
@@ -119,6 +128,8 @@ public class KnowledgeSourceService {
         if (source == null || STATUS_DELETED.equals(source.getStatus())) return;
         source.setStatus(STATUS_DELETED);
         sourceMapper.updateById(source);
+        auditService.record(userId, "SOURCE_DELETED", "SOURCE", source.getId(), source.getSpaceId(), source.getCollectionId(),
+                "mediaId=" + mediaId);
     }
 
     private KnowledgeSource requireOwnedSource(Long userId, Long sourceId) {
