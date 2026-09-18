@@ -15,6 +15,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /** 受控 Agent 编排器：恢复状态、执行一轮分析、校验证据，再决定结束还是补跑。 */
 @Service
@@ -22,6 +23,8 @@ public class AgentLoopService {
 
     private static final Logger log = LoggerFactory.getLogger(AgentLoopService.class);
     private static final int MAX_PLAN_TASKS = 5;
+    /** A normal successful pass needs Planner, Executor, and Critic model calls. */
+    static final int MINIMUM_MODEL_CALLS_PER_SUCCESSFUL_RUN = 3;
 
     private final DeepSeekUtils deepSeekUtils;
     private final LongVideoContextService longVideoContextService;
@@ -41,22 +44,35 @@ public class AgentLoopService {
                             EvidenceVerificationService evidenceVerificationService,
                             TaskEventService taskEventService,
                             @Value("${agent.budget.max-rounds:2}") int maxRounds,
-                            @Value("${agent.budget.max-duration-ms:120000}") long maxDurationMs,
+                            @Value("${agent.budget.max-duration-ms:900000}") long maxDurationMs,
                             @Value("${agent.budget.max-estimated-tokens:50000}") long maxEstimatedTokens,
-                            @Value("${agent.budget.max-estimated-cost:0}") double maxEstimatedCost) {
+                            @Value("${agent.budget.max-estimated-cost:0}") double maxEstimatedCost,
+                            @Value("${ai.deepseek.timeout-seconds:300}") long modelTimeoutSeconds) {
         this.deepSeekUtils = deepSeekUtils;
         this.longVideoContextService = longVideoContextService;
         this.checkpointService = checkpointService;
         this.telemetry = telemetry;
         this.evidenceVerificationService = evidenceVerificationService;
         this.taskEventService = taskEventService;
-        if (maxRounds < 1 || maxDurationMs < 1 || maxEstimatedTokens < 1 || maxEstimatedCost < 0) {
+        if (maxRounds < 1 || maxDurationMs < 1 || maxEstimatedTokens < 1
+                || maxEstimatedCost < 0 || modelTimeoutSeconds < 1) {
             throw new IllegalArgumentException("Agent 终止预算配置无效");
+        }
+        long minimumDurationMs = minimumDurationMs(modelTimeoutSeconds);
+        if (maxDurationMs < minimumDurationMs) {
+            throw new IllegalArgumentException("AGENT_MAX_DURATION_MS 至少应为 "
+                    + minimumDurationMs + "，以容纳 Planner、Executor、Critic 各一次模型调用");
         }
         this.maxRounds = maxRounds;
         this.maxDurationMs = maxDurationMs;
         this.maxEstimatedTokens = maxEstimatedTokens;
         this.maxEstimatedCost = maxEstimatedCost;
+    }
+
+    static long minimumDurationMs(long modelTimeoutSeconds) {
+        return Math.multiplyExact(
+                TimeUnit.SECONDS.toMillis(modelTimeoutSeconds),
+                MINIMUM_MODEL_CALLS_PER_SUCCESSFUL_RUN);
     }
 
     public AgentState run(VideoContext context) {
