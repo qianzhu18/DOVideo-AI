@@ -17,7 +17,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-/** 受控 Agent 编排器：恢复状态、执行一轮分析、校验证据，再决定结束还是补跑。 */
+/** Controlled agent orchestrator: restore state, run one analysis round, verify evidence, then decide to finish or revise. */
 @Service
 public class AgentLoopService {
 
@@ -79,14 +79,15 @@ public class AgentLoopService {
         return run(null, context, null);
     }
 
-    /** 兼容旧调用方:无模式 = GENERAL(空指令 Profile)。 */
+    /** Legacy callers: no mode means GENERAL (an empty mode profile). */
     public AgentState run(Long mediaId, VideoContext context) {
         return run(mediaId, context, null);
     }
 
     /**
-     * 执行一轮受控 Agent 分析。{@code profile} 为空时等价于 GENERAL——三段模式指令均为空串,
-     * 拼接后 prompt 与引入模式体系前完全一致,因此默认行为不变。
+     * Runs one controlled agent analysis round. A {@code null} {@code profile} is equivalent
+     * to GENERAL — all three mode instructions are empty strings, so the assembled prompt is
+     * byte-identical to the pre-mode behavior and the default stays unchanged.
      */
     public AgentState run(Long mediaId, VideoContext context, ModeProfile profile) {
         validateContext(context);
@@ -139,7 +140,8 @@ public class AgentLoopService {
             plan = revisePlanForRetry(mediaId, relevantContext, plan, state.critique(), profile);
         }
 
-        // Executor 草稿已经落盘时，MQ 重试直接从 Critic 接着走，避免重复生成整份产物。
+        // When an executor draft is already checkpointed, an MQ retry resumes straight from
+        // the critic instead of regenerating the whole deliverable.
         if (state.result() != null && state.critique() == null && state.round() > 0) {
             telemetry.incrementCurrent("criticCheckpointResumes", 1);
             checkBudget(runStartedNanos, "Executor Checkpoint");
@@ -515,7 +517,8 @@ public class AgentLoopService {
         return values == null ? List.of() : values;
     }
 
-    // profile 为空(GENERAL)时返回空指令/GENERAL 模式,使 prompt 与 checkpoint 键都与引入模式前一致。
+    // A null profile maps to empty instructions / GENERAL so prompts and checkpoint keys
+    // stay identical to the pre-mode behavior.
     private static AnalysisMode modeOf(ModeProfile profile) {
         return profile == null ? AnalysisMode.GENERAL : profile.mode();
     }
