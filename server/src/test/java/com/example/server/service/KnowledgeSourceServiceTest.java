@@ -1,20 +1,29 @@
 package com.example.server.service;
 
+import com.example.server.exception.BusinessException;
 import com.example.server.dto.KnowledgeSourceLocationRequest;
+import com.example.server.dto.KnowledgeSourceTagsRequest;
 import com.example.server.dto.KnowledgeSourceView;
 import com.example.server.entity.KnowledgeCollection;
 import com.example.server.entity.KnowledgeSource;
+import com.example.server.entity.KnowledgeSourceTag;
 import com.example.server.entity.KnowledgeSourceVersion;
 import com.example.server.entity.KnowledgeSpace;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.KnowledgeSourceMapper;
+import com.example.server.mapper.KnowledgeSourceTagMapper;
 import com.example.server.mapper.KnowledgeSourceVersionMapper;
 import com.example.server.mapper.MediaFileMapper;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -24,6 +33,7 @@ class KnowledgeSourceServiceTest {
     void createsPendingVersionedSourceForUploadedVideo() {
         KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
         KnowledgeSourceVersionMapper versionMapper = mock(KnowledgeSourceVersionMapper.class);
+        KnowledgeSourceTagMapper tagMapper = mock(KnowledgeSourceTagMapper.class);
         MediaFileMapper mediaMapper = mock(MediaFileMapper.class);
         KnowledgeSpaceService spaceService = mock(KnowledgeSpaceService.class);
         KnowledgeCollectionService collectionService = mock(KnowledgeCollectionService.class);
@@ -37,7 +47,8 @@ class KnowledgeSourceServiceTest {
         when(versionMapper.insert(any(KnowledgeSourceVersion.class))).thenAnswer(invocation -> 1);
 
         KnowledgeSourceService service = new KnowledgeSourceService(
-                sourceMapper, versionMapper, mediaMapper, spaceService, collectionService, mock(KnowledgeAuditService.class));
+                sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
+                mock(KnowledgeAuditService.class));
         KnowledgeSource source = service.ensureMediaSource(media(9L, 7L, "jvm.mp4", "aabb"));
 
         assertEquals(21L, source.getId());
@@ -51,6 +62,7 @@ class KnowledgeSourceServiceTest {
     void movesOwnedSourceIntoTargetCollection() {
         KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
         KnowledgeSourceVersionMapper versionMapper = mock(KnowledgeSourceVersionMapper.class);
+        KnowledgeSourceTagMapper tagMapper = mock(KnowledgeSourceTagMapper.class);
         MediaFileMapper mediaMapper = mock(MediaFileMapper.class);
         KnowledgeSpaceService spaceService = mock(KnowledgeSpaceService.class);
         KnowledgeCollectionService collectionService = mock(KnowledgeCollectionService.class);
@@ -66,12 +78,86 @@ class KnowledgeSourceServiceTest {
         when(collectionService.requireCollectionInSpace(31L, 5L)).thenReturn(collection);
 
         KnowledgeSourceService service = new KnowledgeSourceService(
-                sourceMapper, versionMapper, mediaMapper, spaceService, collectionService, mock(KnowledgeAuditService.class));
+                sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
+                mock(KnowledgeAuditService.class));
         KnowledgeSourceView moved = service.move(7L, 21L, new KnowledgeSourceLocationRequest(5L, 31L));
 
         assertEquals(5L, moved.spaceId());
         assertEquals(31L, moved.collectionId());
         verify(sourceMapper).updateById(source);
+    }
+
+    @Test
+    void replaceTagsTrimsDedupesAndSkipsNoopWrites() {
+        KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
+        KnowledgeSourceVersionMapper versionMapper = mock(KnowledgeSourceVersionMapper.class);
+        KnowledgeSourceTagMapper tagMapper = mock(KnowledgeSourceTagMapper.class);
+        MediaFileMapper mediaMapper = mock(MediaFileMapper.class);
+        KnowledgeSpaceService spaceService = mock(KnowledgeSpaceService.class);
+        KnowledgeCollectionService collectionService = mock(KnowledgeCollectionService.class);
+        KnowledgeSource source = ownedSource(21L, 7L);
+        when(sourceMapper.selectById(21L)).thenReturn(source);
+        when(tagMapper.selectList(any())).thenReturn(List.of(tagRow(21L, "JVM")));
+
+        KnowledgeSourceService service = new KnowledgeSourceService(
+                sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
+                mock(KnowledgeAuditService.class));
+        KnowledgeSourceView result = service.replaceTags(
+                7L, 21L, new KnowledgeSourceTagsRequest(List.of(" JVM ", "", "JVM")));
+
+        assertEquals(List.of("JVM"), result.tags());
+        verify(tagMapper, never()).delete(any());
+        verify(tagMapper, never()).insert(any(KnowledgeSourceTag.class));
+    }
+
+    @Test
+    void replaceTagsRewritesWhenSetChanges() {
+        KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
+        KnowledgeSourceVersionMapper versionMapper = mock(KnowledgeSourceVersionMapper.class);
+        KnowledgeSourceTagMapper tagMapper = mock(KnowledgeSourceTagMapper.class);
+        MediaFileMapper mediaMapper = mock(MediaFileMapper.class);
+        KnowledgeSpaceService spaceService = mock(KnowledgeSpaceService.class);
+        KnowledgeCollectionService collectionService = mock(KnowledgeCollectionService.class);
+        KnowledgeSource source = ownedSource(21L, 7L);
+        when(sourceMapper.selectById(21L)).thenReturn(source);
+        when(tagMapper.selectList(any())).thenReturn(List.of(tagRow(21L, "JVM")));
+
+        KnowledgeSourceService service = new KnowledgeSourceService(
+                sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
+                mock(KnowledgeAuditService.class));
+        KnowledgeSourceView result = service.replaceTags(
+                7L, 21L, new KnowledgeSourceTagsRequest(List.of("GC", "面试")));
+
+        assertEquals(List.of("GC", "面试"), result.tags());
+        verify(tagMapper).delete(any());
+        verify(tagMapper, times(2)).insert(any(KnowledgeSourceTag.class));
+    }
+
+    @Test
+    void normalizeTagsRejectsOverlongTagAndTooManyTags() {
+        assertEquals(List.of("GC"), KnowledgeSourceService.normalizeTags(java.util.Arrays.asList("  ", null, " GC ")));
+        assertThrows(BusinessException.class,
+                () -> KnowledgeSourceService.normalizeTags(List.of("x".repeat(65))));
+        List<String> tooMany = java.util.stream.IntStream.rangeClosed(1, 21)
+                .mapToObj(i -> "t" + i)
+                .toList();
+        assertThrows(BusinessException.class, () -> KnowledgeSourceService.normalizeTags(tooMany));
+    }
+
+    private static KnowledgeSource ownedSource(Long id, Long ownerId) {
+        KnowledgeSource source = new KnowledgeSource();
+        source.setId(id);
+        source.setOwnerUserId(ownerId);
+        source.setSpaceId(3L);
+        source.setStatus(KnowledgeSourceService.STATUS_PENDING);
+        return source;
+    }
+
+    private static KnowledgeSourceTag tagRow(Long sourceId, String tag) {
+        KnowledgeSourceTag row = new KnowledgeSourceTag();
+        row.setSourceId(sourceId);
+        row.setTag(tag);
+        return row;
     }
 
     private static KnowledgeSpace space(Long id, Long ownerId) {

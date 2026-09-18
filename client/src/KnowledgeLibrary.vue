@@ -103,7 +103,13 @@
               <p class="source-path">{{ selectedSpace?.name || '正在载入' }} <span>/</span> {{ selectedCollection?.name || '根目录' }}</p>
               <h2>{{ selectedCollection?.name || selectedSpace?.name || '知识来源' }}</h2>
             </div>
-            <button type="button" class="subtle-button" :disabled="loading" @click="refreshCurrent">刷新</button>
+            <div class="header-tools">
+              <form class="tag-filter" @submit.prevent="applyTagFilter">
+                <input v-model="tagFilter" maxlength="64" placeholder="按标签筛选" aria-label="按标签筛选" />
+                <button v-if="activeTag" type="button" class="tag-clear" aria-label="清除标签筛选" @click="clearTagFilter">×</button>
+              </form>
+              <button type="button" class="subtle-button" :disabled="loading" @click="refreshCurrent">刷新</button>
+            </div>
           </header>
 
           <div v-if="loading" class="knowledge-loading" role="status">正在读取知识资产...</div>
@@ -117,7 +123,35 @@
               <div class="source-type">{{ source.sourceType === 'VIDEO' ? 'VID' : source.sourceType }}</div>
               <div class="source-copy">
                 <h3 :title="source.title">{{ source.title }}</h3>
-                <p><span :class="['status-chip', `status-${source.status.toLowerCase()}`]">{{ source.status }}</span><span>版本 {{ source.currentVersion }}</span><span>{{ formatDate(source.updatedAt) }}</span></p>
+                <p>
+                  <span :class="['status-chip', `status-${source.status.toLowerCase()}`]">{{ source.status }}</span>
+                  <span>版本 {{ source.currentVersion }}</span>
+                  <span>{{ formatDate(source.updatedAt) }}</span>
+                </p>
+                <p v-if="(source.tags?.length || tagEditorId === source.id)" class="source-tags">
+                  <span v-for="tag in source.tags || []" :key="tag" class="tag-chip">
+                    {{ tag }}
+                    <button type="button" class="tag-remove" :aria-label="`移除标签 ${tag}`" :disabled="saving" @click="removeTag(source, tag)">×</button>
+                  </span>
+                  <button
+                    v-if="tagEditorId !== source.id"
+                    type="button"
+                    class="tag-add"
+                    :disabled="saving"
+                    @click="toggleTagEditor(source)"
+                  >+ 标签</button>
+                </p>
+                <form v-if="tagEditorId === source.id" class="tag-editor" @submit.prevent="commitTagEditor(source)">
+                  <input
+                    v-model="newTagDraft"
+                    maxlength="64"
+                    placeholder="输入标签，回车确认"
+                    aria-label="新标签"
+                    autofocus
+                  />
+                  <button type="button" class="subtle-button" @click="closeTagEditor">取消</button>
+                  <button type="submit" class="subtle-button text-action" :disabled="saving || !newTagDraft.trim()">添加</button>
+                </form>
               </div>
               <button type="button" class="source-move" @click="openMove(source)">移动</button>
             </li>
@@ -176,11 +210,15 @@ const movingSource = ref(null)
 const moveSpaceId = ref(null)
 const moveCollectionId = ref(null)
 const moveCollections = ref([])
+const tagFilter = ref('')
+const tagEditorId = ref(null)
+const newTagDraft = ref('')
 
 const selectedSpace = computed(() => spaces.value.find(space => space.id === selectedSpaceId.value) || null)
 const selectedCollection = computed(() => collections.value.find(collection => collection.id === selectedCollectionId.value) || null)
 const collectionParent = computed(() => collections.value.find(collection => collection.id === collectionParentId.value) || null)
 const sourceCount = computed(() => sources.value.length)
+const activeTag = computed(() => tagFilter.value.trim())
 
 watch(() => props.user?.id, async userId => {
   resetState()
@@ -195,6 +233,8 @@ function resetState() {
   selectedCollectionId.value = null
   error.value = ''
   notice.value = ''
+  tagFilter.value = ''
+  closeTagEditor()
   closeSpaceComposer()
   closeCollectionComposer()
   closeMove()
@@ -231,8 +271,10 @@ async function loadCurrentSpace() {
   }
   const spaceId = selectedSpaceId.value
   const collectionId = selectedCollectionId.value
+  const tag = tagFilter.value.trim()
   const sourcePath = new URLSearchParams({ spaceId: String(spaceId) })
   if (collectionId !== null) sourcePath.set('collectionId', String(collectionId))
+  if (tag) sourcePath.set('tag', tag)
   const [loadedCollections, loadedSources] = await Promise.all([
     request(`/knowledge/spaces/${spaceId}/collections`),
     request(`/knowledge/sources?${sourcePath}`)
@@ -376,6 +418,55 @@ async function moveSource() {
   }
 }
 
+function applyTagFilter() {
+  tagFilter.value = tagFilter.value.trim()
+  refreshCurrent()
+}
+
+async function clearTagFilter() {
+  if (!tagFilter.value) return
+  tagFilter.value = ''
+  await refreshCurrent()
+}
+
+function toggleTagEditor(source) {
+  tagEditorId.value = source.id
+  newTagDraft.value = ''
+}
+
+function closeTagEditor() {
+  tagEditorId.value = null
+  newTagDraft.value = ''
+}
+
+async function commitTagEditor(source) {
+  const tag = newTagDraft.value.trim()
+  if (!tag) return
+  await saveTags(source, [...(source.tags || []), tag])
+  closeTagEditor()
+}
+
+async function removeTag(source, tag) {
+  await saveTags(source, (source.tags || []).filter(candidate => candidate !== tag))
+}
+
+async function saveTags(source, tags) {
+  saving.value = true
+  error.value = ''
+  try {
+    const updated = await request(`/knowledge/sources/${source.id}/tags`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tags })
+    })
+    sources.value = sources.value.map(candidate => (candidate.id === updated.id ? updated : candidate))
+  } catch (cause) {
+    error.value = cause.message || '保存标签失败'
+  } finally {
+    saving.value = false
+  }
+}
+
 function collectionDepth(collection) {
   return Math.max(0, (collection.path || '').split('/').filter(Boolean).length - 1)
 }
@@ -433,6 +524,21 @@ function formatDate(value) {
 .source-path span { color: var(--accent-lime); margin: 0 5px; }
 .source-header h2 { margin-top: 5px; font-size: 1.5rem; line-height: 1.25; }
 .subtle-button { padding: 6px 11px; font: .72rem/1 monospace; }
+.header-tools { display: flex; align-items: center; gap: 10px; }
+.tag-filter { position: relative; display: flex; }
+.tag-filter input { width: 168px; border: 1px solid var(--border-tech); border-radius: 0; background: #090a0d; color: var(--text-main); padding: 7px 26px 7px 9px; font: .7rem/1.2 monospace; outline: none; }
+.tag-filter input:focus { border-color: var(--accent-lime); }
+.tag-clear { position: absolute; right: 2px; top: 0; min-height: 100%; padding: 0 7px; border: 0; background: transparent; color: var(--text-sub); cursor: pointer; font-size: .9rem; }
+.tag-clear:hover { color: var(--accent-lime); }
+.source-tags { margin-top: 7px; }
+.tag-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 8px; border: 1px solid rgba(197,249,70,.35); background: rgba(197,249,70,.06); color: var(--text-main); font: .67rem/1.2 monospace; }
+.tag-remove { border: 0; background: transparent; color: var(--text-sub); cursor: pointer; font-size: .8rem; line-height: 1; padding: 0 3px; }
+.tag-remove:hover:not(:disabled) { color: #ff6876; }
+.tag-add { border: 0; background: transparent; color: var(--text-sub); cursor: pointer; font: .67rem/1.2 monospace; padding: 3px 6px; }
+.tag-add:hover:not(:disabled) { color: var(--accent-lime); }
+.tag-editor { display: flex; gap: 7px; margin-top: 8px; max-width: 340px; }
+.tag-editor input { flex: 1; border: 1px solid var(--border-tech); border-radius: 0; background: #090a0d; color: var(--text-main); padding: 7px 9px; font: .72rem/1.2 monospace; outline: none; }
+.tag-editor input:focus { border-color: var(--accent-lime); }
 .knowledge-loading { min-height: 250px; display: grid; place-items: center; color: var(--text-sub); font: .82rem monospace; }
 .source-empty { min-height: 300px; display: grid; align-content: center; justify-items: start; max-width: 490px; }
 .empty-index { color: var(--accent-lime); font: 700 2.5rem/.9 'Syncopate', monospace; opacity: .8; }
@@ -470,6 +576,9 @@ function formatDate(value) {
   .move-actions { justify-content: flex-end; }
   .source-row { grid-template-columns: 36px minmax(0, 1fr); }
   .source-move { grid-column: 2; justify-self: start; margin-top: -6px; }
+  .header-tools { width: 100%; }
+  .tag-filter { flex: 1; }
+  .tag-filter input { width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { .icon-action:active, .subtle-button:active, .source-move:active, .lime-button:active, .text-action:active { transform: none; } }
 </style>

@@ -2,6 +2,7 @@ package com.example.server.controller;
 
 import com.example.server.common.Result;
 import com.example.server.dto.KnowledgeSourceLocationRequest;
+import com.example.server.dto.KnowledgeSourceTagsRequest;
 import com.example.server.dto.KnowledgeSourceView;
 import com.example.server.service.AuthService;
 import com.example.server.service.KnowledgeSourceService;
@@ -10,6 +11,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -32,8 +34,9 @@ public class KnowledgeSourceController {
     public Result<List<KnowledgeSourceView>> list(
             @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId,
             @RequestParam Long spaceId,
-            @RequestParam(required = false) Long collectionId) {
-        return Result.ok(sourceService.list(userId, spaceId, collectionId));
+            @RequestParam(required = false) Long collectionId,
+            @RequestParam(required = false) String tag) {
+        return Result.ok(sourceService.list(userId, spaceId, collectionId, tag));
     }
 
     @PostMapping("/media/{mediaId}")
@@ -50,5 +53,20 @@ public class KnowledgeSourceController {
             @PathVariable Long sourceId,
             @Valid @RequestBody KnowledgeSourceLocationRequest request) {
         return Result.ok(sourceService.move(userId, sourceId, request));
+    }
+
+    @GetMapping("/{sourceId}/tags")
+    public Result<List<String>> tags(
+            @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId,
+            @PathVariable Long sourceId) {
+        return Result.ok(sourceService.listTags(userId, sourceId));
+    }
+
+    @PutMapping("/{sourceId}/tags")
+    public Result<KnowledgeSourceView> replaceTags(
+            @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId,
+            @PathVariable Long sourceId,
+            @Valid @RequestBody KnowledgeSourceTagsRequest request) {
+        return Result.ok(sourceService.replaceTags(userId, sourceId, request));
     }
 }

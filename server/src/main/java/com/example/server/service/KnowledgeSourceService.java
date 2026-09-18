@@ -3,21 +3,29 @@ package com.example.server.service;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.example.server.common.ErrorCode;
 import com.example.server.dto.KnowledgeSourceLocationRequest;
+import com.example.server.dto.KnowledgeSourceTagsRequest;
 import com.example.server.dto.KnowledgeSourceView;
 import com.example.server.entity.KnowledgeCollection;
 import com.example.server.entity.KnowledgeSource;
+import com.example.server.entity.KnowledgeSourceTag;
 import com.example.server.entity.KnowledgeSourceVersion;
 import com.example.server.entity.KnowledgeSpace;
 import com.example.server.entity.MediaFile;
 import com.example.server.exception.BusinessException;
 import com.example.server.mapper.KnowledgeSourceMapper;
+import com.example.server.mapper.KnowledgeSourceTagMapper;
 import com.example.server.mapper.KnowledgeSourceVersionMapper;
 import com.example.server.mapper.MediaFileMapper;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Service
 public class KnowledgeSourceService {
@@ -26,8 +34,12 @@ public class KnowledgeSourceService {
     public static final String STATUS_PENDING = "PENDING";
     public static final String STATUS_DELETED = "DELETED";
 
+    static final int MAX_TAGS_PER_SOURCE = 20;
+    static final int MAX_TAG_LENGTH = 64;
+
     private final KnowledgeSourceMapper sourceMapper;
     private final KnowledgeSourceVersionMapper versionMapper;
+    private final KnowledgeSourceTagMapper tagMapper;
     private final MediaFileMapper mediaFileMapper;
     private final KnowledgeSpaceService spaceService;
     private final KnowledgeCollectionService collectionService;
@@ -35,12 +47,14 @@ public class KnowledgeSourceService {
 
     public KnowledgeSourceService(KnowledgeSourceMapper sourceMapper,
                                   KnowledgeSourceVersionMapper versionMapper,
+                                  KnowledgeSourceTagMapper tagMapper,
                                   MediaFileMapper mediaFileMapper,
                                   KnowledgeSpaceService spaceService,
                                   KnowledgeCollectionService collectionService,
                                   KnowledgeAuditService auditService) {
         this.sourceMapper = sourceMapper;
         this.versionMapper = versionMapper;
+        this.tagMapper = tagMapper;
         this.mediaFileMapper = mediaFileMapper;
         this.spaceService = spaceService;
         this.collectionService = collectionService;
@@ -90,7 +104,7 @@ public class KnowledgeSourceService {
         return move(userId, source.getId(), request);
     }
 
-    public List<KnowledgeSourceView> list(Long userId, Long spaceId, Long collectionId) {
+    public List<KnowledgeSourceView> list(Long userId, Long spaceId, Long collectionId, String tag) {
         spaceService.requireOwnedSpace(userId, spaceId);
         if (collectionId != null) collectionService.requireCollectionInSpace(collectionId, spaceId);
         QueryWrapper<KnowledgeSource> query = new QueryWrapper<KnowledgeSource>()
@@ -98,9 +112,83 @@ public class KnowledgeSourceService {
                 .eq("space_id", spaceId)
                 .ne("status", STATUS_DELETED)
                 .orderByDesc("updated_at");
-        if (collectionId == null) query.isNull("collection_id");
-        else query.eq("collection_id", collectionId);
-        return sourceMapper.selectList(query).stream().map(KnowledgeSourceView::from).toList();
+        if (collectionId == null) {
+            // 根层级浏览只展示未归档来源；但带标签检索时是全空间语义，不能再叠加该约束。
+            if (tag == null || tag.isBlank()) query.isNull("collection_id");
+        } else {
+            query.eq("collection_id", collectionId);
+        }
+        if (tag != null && !tag.isBlank()) {
+            List<Long> taggedSourceIds = sourceIdsWithTag(tag.trim());
+            if (taggedSourceIds.isEmpty()) return List.of();
+            query.in("id", taggedSourceIds);
+        }
+        List<KnowledgeSource> sources = sourceMapper.selectList(query);
+        if (sources.isEmpty()) return List.of();
+        Map<Long, List<String>> tagsBySource = tagsForSources(sources.stream().map(KnowledgeSource::getId).toList());
+        return sources.stream()
+                .map(source -> KnowledgeSourceView.from(source, tagsBySource.getOrDefault(source.getId(), List.of())))
+                .toList();
+    }
+
+    public List<String> listTags(Long userId, Long sourceId) {
+        KnowledgeSource source = requireOwnedSource(userId, sourceId);
+        return tagsForSources(List.of(source.getId())).getOrDefault(source.getId(), List.of());
+    }
+
+    @Transactional
+    public KnowledgeSourceView replaceTags(Long userId, Long sourceId, KnowledgeSourceTagsRequest request) {
+        KnowledgeSource source = requireOwnedSource(userId, sourceId);
+        List<String> normalized = normalizeTags(request.tags());
+        Map<Long, List<String>> existing = tagsForSources(List.of(sourceId));
+        Set<String> current = new LinkedHashSet<>(existing.getOrDefault(sourceId, List.of()));
+        if (!current.equals(new LinkedHashSet<>(normalized))) {
+            tagMapper.delete(new QueryWrapper<KnowledgeSourceTag>().eq("source_id", sourceId));
+            for (String tag : normalized) {
+                KnowledgeSourceTag row = new KnowledgeSourceTag();
+                row.setSourceId(sourceId);
+                row.setTag(tag);
+                try {
+                    tagMapper.insert(row);
+                } catch (DuplicateKeyException error) {
+                    // 并发替换时另一请求已写入同一标签，最终集合仍由本次事务决定，跳过即可。
+                }
+            }
+            auditService.record(userId, "SOURCE_TAGGED", "SOURCE", source.getId(), source.getSpaceId(), source.getCollectionId(),
+                    "tags=" + String.join(",", normalized) + ";previous=" + String.join(",", current));
+        }
+        return KnowledgeSourceView.from(source, normalized);
+    }
+
+    static List<String> normalizeTags(List<String> requested) {
+        LinkedHashSet<String> normalized = new LinkedHashSet<>();
+        if (requested != null) {
+            for (String raw : requested) {
+                String tag = raw == null ? "" : raw.trim();
+                if (tag.isEmpty()) continue;
+                if (tag.length() > MAX_TAG_LENGTH) {
+                    throw new BusinessException(ErrorCode.INVALID_ARGUMENT, "标签不能超过 " + MAX_TAG_LENGTH + " 个字符");
+                }
+                normalized.add(tag);
+            }
+        }
+        if (normalized.size() > MAX_TAGS_PER_SOURCE) {
+            throw new BusinessException(ErrorCode.INVALID_ARGUMENT, "每个内容源最多 " + MAX_TAGS_PER_SOURCE + " 个标签");
+        }
+        return new ArrayList<>(normalized);
+    }
+
+    private List<Long> sourceIdsWithTag(String tag) {
+        return tagMapper.selectList(new QueryWrapper<KnowledgeSourceTag>().eq("tag", tag))
+                .stream().map(KnowledgeSourceTag::getSourceId).distinct().toList();
+    }
+
+    private Map<Long, List<String>> tagsForSources(List<Long> sourceIds) {
+        if (sourceIds.isEmpty()) return Map.of();
+        return tagMapper.selectList(new QueryWrapper<KnowledgeSourceTag>().in("source_id", sourceIds).orderByAsc("id"))
+                .stream()
+                .collect(Collectors.groupingBy(KnowledgeSourceTag::getSourceId,
+                        Collectors.mapping(KnowledgeSourceTag::getTag, Collectors.toList())));
     }
 
     @Transactional
