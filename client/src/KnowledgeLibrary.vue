@@ -61,6 +61,39 @@
           </nav>
 
           <div class="rail-divider"></div>
+          <div class="rail-heading"><span>本地目录导入</span></div>
+          <form class="rail-form compact-form" @submit.prevent="runIngest(true)">
+            <label>
+              <span>本机视频目录（需在授权根目录内）</span>
+              <input v-model="ingestPath" placeholder="/path/to/videos" aria-label="导入目录" />
+            </label>
+            <div class="form-actions">
+              <button type="submit" class="text-action" :disabled="ingestBusy || !ingestPath.trim() || !selectedSpaceId">
+                {{ ingestBusy ? '处理中…' : '扫描预览' }}
+              </button>
+              <button type="button" class="text-action" :disabled="ingestBusy || !ingestPath.trim() || !selectedSpaceId || !ingestPlan" @click="applyIngest">
+                导入
+              </button>
+            </div>
+            <p v-if="ingestError" class="ingest-error" role="alert">{{ ingestError }}</p>
+          </form>
+          <div v-if="ingestPlan" class="ingest-plan">
+            <p class="ingest-plan-head">
+              {{ ingestPlan.dryRun ? '预览' : '已导入' }}：
+              新建 {{ ingestPlan.createdCount }} · 变更 {{ ingestPlan.changedCount }} ·
+              移动 {{ ingestPlan.movedCount }} · 删除 {{ ingestPlan.deletedCount }} ·
+              不变 {{ ingestPlan.unchangedCount }} · 错误 {{ ingestPlan.errorCount }}
+            </p>
+            <ul>
+              <li v-for="(action, index) in ingestActions" :key="index">
+                <span :class="['ingest-action', `is-${action.action.toLowerCase()}`]">{{ action.action }}</span>
+                <span class="ingest-path">{{ action.path.split('/').pop() }}</span>
+                <small v-if="action.error">{{ action.error }}</small>
+              </li>
+            </ul>
+          </div>
+
+          <div class="rail-divider"></div>
           <div class="rail-heading folder-heading">
             <span>目录</span>
             <button type="button" class="icon-action" :disabled="!selectedSpaceId" aria-label="新建目录" @click="openCollectionComposer(selectedCollectionId)">+</button>
@@ -251,6 +284,19 @@ const searching = ref(false)
 const searched = ref(false)
 const searchResults = ref([])
 const searchError = ref('')
+const ingestPath = ref('')
+const ingestBusy = ref(false)
+const ingestPlan = ref(null)
+const ingestError = ref('')
+
+const ingestActions = computed(() => {
+  if (!ingestPlan.value?.plan) return []
+  try {
+    return JSON.parse(ingestPlan.value.plan).actions || []
+  } catch {
+    return []
+  }
+})
 
 const selectedSpace = computed(() => spaces.value.find(space => space.id === selectedSpaceId.value) || null)
 const selectedCollection = computed(() => collections.value.find(collection => collection.id === selectedCollectionId.value) || null)
@@ -486,6 +532,37 @@ function closeSearchResults() {
   searchResults.value = []
 }
 
+async function runIngest(dryRun) {
+  const rootPath = ingestPath.value.trim()
+  if (!rootPath || !selectedSpaceId.value) return
+  ingestBusy.value = true
+  ingestError.value = ''
+  try {
+    ingestPlan.value = await request('/knowledge/ingest/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rootPath,
+        spaceId: selectedSpaceId.value,
+        collectionId: selectedCollectionId.value,
+        dryRun
+      })
+    })
+    if (!dryRun) {
+      notice.value = '目录导入已应用'
+      await refreshCurrent()
+    }
+  } catch (cause) {
+    ingestError.value = cause.message || '目录导入失败'
+  } finally {
+    ingestBusy.value = false
+  }
+}
+
+async function applyIngest() {
+  await runIngest(false)
+}
+
 function formatMs(value) {
   const totalSeconds = Math.max(0, Math.floor((value || 0) / 1000))
   const minutes = Math.floor(totalSeconds / 60)
@@ -626,6 +703,18 @@ function formatDate(value) {
 .search-hit-time { color: var(--accent-lime); font: .7rem/1 monospace; }
 .search-hit-kind { padding: 2px 6px; border: 1px solid rgba(197,249,70,.35); color: var(--text-sub); font: .62rem/1.2 monospace; }
 .search-hit p { margin: 0; color: var(--text-sub); font-size: .8rem; line-height: 1.7; }
+.ingest-error { margin: 6px 0 0; color: #ff6876; font: .65rem/1.4 monospace; }
+.ingest-plan { margin: 2px 3px 10px; padding: 8px; border: 1px solid var(--border-tech); background: rgba(5,6,8,.35); }
+.ingest-plan-head { margin: 0 0 6px; color: var(--text-sub); font: .62rem/1.5 monospace; }
+.ingest-plan ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; max-height: 180px; overflow: auto; }
+.ingest-plan li { display: flex; align-items: baseline; gap: 6px; font: .65rem/1.4 monospace; }
+.ingest-action { min-width: 58px; color: var(--accent-lime); }
+.ingest-action.is-deleted { color: #ff6876; }
+.ingest-action.is-changed { color: #f2bf6b; }
+.ingest-action.is-unchanged { color: var(--text-sub); }
+.ingest-action.is-error { color: #ff6876; }
+.ingest-path { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; color: var(--text-main); }
+.ingest-plan small { color: #ff6876; }
 .knowledge-loading { min-height: 250px; display: grid; place-items: center; color: var(--text-sub); font: .82rem monospace; }
 .source-empty { min-height: 300px; display: grid; align-content: center; justify-items: start; max-width: 490px; }
 .empty-index { color: var(--accent-lime); font: 700 2.5rem/.9 'Syncopate', monospace; opacity: .8; }
