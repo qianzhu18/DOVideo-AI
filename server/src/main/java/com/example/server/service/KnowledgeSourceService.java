@@ -281,6 +281,35 @@ public class KnowledgeSourceService {
         return source;
     }
 
+    /** All non-deleted sources of a user that were ingested from a local path. */
+    public List<KnowledgeSource> listIngested(Long userId) {
+        return sourceMapper.selectList(new QueryWrapper<KnowledgeSource>()
+                .eq("owner_user_id", userId)
+                .ne("status", STATUS_DELETED)
+                .isNotNull("external_path"));
+    }
+
+    /** Records the local file location of an ingested source (path is metadata, never identity). */
+    public void registerExternalLocation(Long userId, Long mediaId, String externalPath) {
+        KnowledgeSource source = requireSourceByMediaId(mediaId);
+        source.setExternalPath(externalPath);
+        sourceMapper.updateById(source);
+        auditService.record(userId, "SOURCE_PATH_UPDATED", "SOURCE", source.getId(),
+                source.getSpaceId(), source.getCollectionId(),
+                "externalPath=" + externalPath);
+    }
+
+    /** Metadata-only rename for an ingested source whose file moved on disk. */
+    public void renameSource(Long userId, Long sourceId, String title, String externalPath) {
+        KnowledgeSource source = requireOwnedSource(userId, sourceId);
+        source.setTitle(title);
+        source.setExternalPath(externalPath);
+        sourceMapper.updateById(source);
+        auditService.record(userId, "SOURCE_PATH_UPDATED", "SOURCE", source.getId(),
+                source.getSpaceId(), source.getCollectionId(),
+                "title=" + title + ";externalPath=" + externalPath);
+    }
+
     private KnowledgeSource findByMediaId(Long mediaId) {
         return sourceMapper.selectOne(new QueryWrapper<KnowledgeSource>().eq("media_id", mediaId));
     }

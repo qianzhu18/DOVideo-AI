@@ -140,10 +140,11 @@ public class AiService {
     }
 
     /**
-     * Best-effort knowledge indexing after a successful analysis. Indexing problems must
-     * never fail the analysis itself — they are recorded on the source version instead.
+     * Best-effort knowledge indexing after a successful analysis or a reused result.
+     * Indexing problems must never fail the analysis itself — they are recorded on the
+     * source version instead.
      */
-    private void indexKnowledge(Long mediaId) {
+    public void indexKnowledge(Long mediaId) {
         try {
             knowledgeSegmentIndexService.indexMedia(mediaId);
         } catch (RuntimeException e) {

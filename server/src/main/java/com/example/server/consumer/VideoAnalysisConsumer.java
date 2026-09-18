@@ -132,6 +132,9 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> 
                         taskEventService.publishAnalysis(mediaId, msg.getUserGoal(), mode,
                                 TaskStatus.completed(reusable), TaskStage.COMPLETED_REUSED);
                         log.info("video_analysis_reused mediaId={} sourceMediaId={}", mediaId, sourceMediaId);
+                        // A reused result skips asyncAnalyze entirely, so the knowledge
+                        // index must be fed here too or the source stays PENDING forever.
+                        aiService.indexKnowledge(mediaId);
                         return;
                     }
                     redisTemplate.delete(completedKey);

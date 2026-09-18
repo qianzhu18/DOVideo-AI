@@ -47,6 +47,14 @@ public class MediaService {
     private static final Set<String> VIDEO_SUFFIXES = Set.of(
             ".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v");
 
+    /** Suffix check shared with the local-directory ingest scanner. */
+    public static boolean isVideoFile(String filename) {
+        if (filename == null) return false;
+        int dot = filename.lastIndexOf('.');
+        String suffix = dot < 0 ? "" : filename.substring(dot).toLowerCase(java.util.Locale.ROOT);
+        return VIDEO_SUFFIXES.contains(suffix);
+    }
+
     public MediaService(MediaFileMapper mediaFileMapper,
                         StringRedisTemplate redisTemplate,
                         MinioUtils minioUtils,
