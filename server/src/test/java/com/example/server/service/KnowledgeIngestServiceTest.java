@@ -6,14 +6,12 @@ import com.example.server.entity.KnowledgeIngestScan;
 import com.example.server.entity.KnowledgeSource;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.KnowledgeIngestScanMapper;
-import com.example.server.mapper.KnowledgeSourceMapper;
 import com.example.server.utils.MinioUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -68,7 +66,6 @@ class KnowledgeIngestServiceTest {
         when(mediaService(service).calculateMd5(any(java.io.File.class))).thenReturn("md5-x");
         when(mediaService(service).saveUploadedMedia(eq("clip.mp4"), eq("minio://x"),
                 eq(7L), eq("md5-x"))).thenReturn(media);
-        when(sourceMapper(service).selectById(21L)).thenReturn(source(9L, 21L));
 
         KnowledgeIngestScan scan = service.ingest(7L, request(root.toString(), false));
 
@@ -97,19 +94,13 @@ class KnowledgeIngestServiceTest {
         return lastDispatchService;
     }
 
-    private KnowledgeSourceMapper sourceMapper(KnowledgeIngestService ignored) {
-        return lastSourceMapper;
-    }
-
     private MediaService lastMediaService;
     private KnowledgeSourceService lastSourceService;
     private MinioUtils lastMinioUtils;
     private AnalysisDispatchService lastDispatchService;
-    private KnowledgeSourceMapper lastSourceMapper;
 
     private KnowledgeIngestService service(String allowedRoots, Path root) {
         KnowledgeSourceService sourceService = mock(KnowledgeSourceService.class);
-        KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
         MediaService mediaService = mock(MediaService.class);
         AnalysisDispatchService dispatchService = mock(AnalysisDispatchService.class);
         KnowledgeAuditService auditService = mock(KnowledgeAuditService.class);
@@ -117,16 +108,11 @@ class KnowledgeIngestServiceTest {
         MinioUtils minioUtils = mock(MinioUtils.class);
 
         lastSourceService = sourceService;
-        lastSourceMapper = sourceMapper;
         lastMediaService = mediaService;
         lastDispatchService = dispatchService;
         lastMinioUtils = minioUtils;
 
-        KnowledgeSource ingested = source(9L, 21L);
-        ingested.setExternalPath(root.resolve("known.mp4").toString());
-        when(sourceMapper.selectList(any())).thenReturn(List.of());
-
-        return new KnowledgeIngestService(sourceService, sourceMapper, mediaService,
+        return new KnowledgeIngestService(sourceService, mediaService,
                 dispatchService, auditService, scanMapper, minioUtils, allowedRoots);
     }
 

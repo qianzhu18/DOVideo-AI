@@ -9,7 +9,6 @@ import com.example.server.entity.KnowledgeSource;
 import com.example.server.entity.MediaFile;
 import com.example.server.exception.BusinessException;
 import com.example.server.mapper.KnowledgeIngestScanMapper;
-import com.example.server.mapper.KnowledgeSourceMapper;
 import com.example.server.utils.MinioUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -44,7 +43,6 @@ public class KnowledgeIngestService {
     static final String DEFAULT_INGEST_GOAL = "完整解析这个视频的内容，提取带时间戳的要点";
 
     private final KnowledgeSourceService sourceService;
-    private final KnowledgeSourceMapper sourceMapper;
     private final MediaService mediaService;
     private final AnalysisDispatchService dispatchService;
     private final KnowledgeAuditService auditService;
@@ -53,7 +51,6 @@ public class KnowledgeIngestService {
     private final List<String> allowedRoots;
 
     public KnowledgeIngestService(KnowledgeSourceService sourceService,
-                                  KnowledgeSourceMapper sourceMapper,
                                   MediaService mediaService,
                                   AnalysisDispatchService dispatchService,
                                   KnowledgeAuditService auditService,
@@ -61,7 +58,6 @@ public class KnowledgeIngestService {
                                   MinioUtils minioUtils,
                                   @Value("${knowledge.ingest.allowed-roots:}") String allowedRoots) {
         this.sourceService = sourceService;
-        this.sourceMapper = sourceMapper;
         this.mediaService = mediaService;
         this.dispatchService = dispatchService;
         this.auditService = auditService;
