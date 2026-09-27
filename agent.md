@@ -39,18 +39,18 @@
 | A2 媒体托管 | ✅ | 13 期 MD5→MinIO→externalPath 注册；片段级引用带 mediaId+时间戳（rag-samples） |
 | A3 跨视频知识库 | ✅ 真实语料验收通过 | 12 期 checkpoint 零重烧导入（622 段）+ 01 期真 ASR 全链路（预算闸门生效、checkpoint 保全、reindex 10s 恢复 52 段）；ask 四类真实样例：跨视频 5 引用命中两期 / 单期精确 ×2 SUPPORTED / 域外拒答（`docs/acceptance/rag-samples.md`）；引用逐字校验修复（大小写归一 + quote 复制规则强化） |
 | A4 动态更新 | ✅ 零重烧验证 | 重扫 13/13 UNCHANGED（contentHash 差分）；自动发现运行器仍缺（P2） |
-| A5 对外出口 | ⚠️ MCP ✅ / Vue 待走查 | MCP 四工具（新增 `ask_video_knowledge`）真实 E2E 全绿，服务账号 40100 自动重登录跑通，`docs/MCP_SOP.md` + `scripts/mcp_sop_check.sh` 一键验收 PASSED；Vue 界面代码已全接线，人工走查未做（P1-1） |
-| A6 Benchmark | ⚠️ 仍部分 | 评测维度扩充（golden 30→44、Citation Precision、门禁）按用户指示后置；真实样例证据已落档 |
+| A5 对外出口 | ✅ 双出口全验收 | MCP 四工具真实 E2E 全绿（`docs/MCP_SOP.md` + `mcp_sop_check.sh` PASSED）；Vue 界面人工走查通过（2026-09-28：五要素齐全、引用回跳实测定位 381s 落引用窗内、域外拒答、SSE 事件流采样，截图在 `docs/acceptance/`）；完整体验路径见 `docs/EXPERIENCE_SOP.md` |
+| A6 Benchmark | ✅ 门禁全过（2026-09-28 首版） | `eval/golden-v2.json` 31 条分层用例（14 归档跨视频映射 + 13 单期 + 2 跨视频 + 4 拒答）；runner 双层（search/ask）+ 引用独立复核 + manifest + 门禁 exit 2；实测 hybrid Recall@5 **0.96** / MRR 0.89 / 拒答 6/6 / 引用有效率 65/65 / 关键词覆盖 0.64；含一次归因调优闭环（防白卷 prompt：answerable 15→17/25）；报告 `eval/reports/` |
 
 ## 缺口队列（按优先级）
 
-- ~~P0-1 代码级核查~~ ✅ 完成：`docs/CAPABILITY_AUDIT.md` 三列清单（未发现虚假声明；澄清"0.45 拒答阈值"实为分类性拒答；附 3 条遗留问题）。
-- **P0-2 golden 扩充**（后置）：并入归档 14 条跨视频/拒答用例（30→44），补引用有效率维度与门禁。
-- ~~P0-3 真实语料验收~~ ✅ 完成：13 期入库 + ask 四类真实样例（评测数字类验收留在 P0-2）。
-- **P1-1 Vue 知识库界面验收**：代码已全接线，人工走查（提问→回答+来源+时间戳+拒答+回跳）。
-- ~~P1-2 MCP E2E 认证修复~~ ✅ 完成：服务账号模式 + ask 工具 + SOP。
-- **P1-3 Milvus 候选迁移**：双写、回灌、影子查询，benchmark 达标才切默认读。
-- **P2** B站/网盘接入、自动发现增量运行器；ASR 分片断点续跑与死信告警（见 CAPABILITY_AUDIT 遗留）。
+- ~~P0-1 代码级核查~~ ✅：`docs/CAPABILITY_AUDIT.md`。
+- ~~P0-2 golden 扩充~~ ✅（2026-09-28）：以 golden-v2（31 条）落地，含引用有效率与门禁。
+- ~~P0-3 真实语料验收~~ ✅（2026-09-27）：13 期入库 + 四类真实样例。
+- ~~P1-1 Vue 知识库界面验收~~ ✅（2026-09-28）：走查通过，截图归档。
+- ~~P1-2 MCP E2E 认证修复~~ ✅（2026-09-27）：服务账号 + ask 工具 + SOP。
+- **P1-3 Milvus 候选迁移**：双写、回灌、影子查询，benchmark 达标才切默认读（现有 golden-v2 即迁移验收的影子评测集）。
+- **P2** B站/网盘接入、自动发现增量运行器；ASR 分片断点续跑与死信告警；ask 延迟优化（当前 p50 18s，评测报告可复测）。
 
 ## 边界
 
