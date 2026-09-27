@@ -107,6 +107,30 @@ public class DovideoApiClient implements ToolBackend {
     }
 
     @Override
+    public String askKnowledge(String query, Long spaceId, Long collectionId, Integer topK, String strategy)
+            throws Exception {
+        // Upstream requires a concrete spaceId. Resolve one instead of failing: assistants
+        // rarely know the space model, and asking them to list spaces first wastes a turn.
+        Long effectiveSpace = spaceId;
+        if (effectiveSpace == null) {
+            JsonNode spaces = call("GET", "/knowledge/spaces", null, true);
+            JsonNode spaceArray = spaces.isArray() ? spaces : mapper.createArrayNode();
+            if (spaceArray.isEmpty()) {
+                return emptyAccountRefusal();
+            }
+            JsonNode chosen = pickDefaultSpace(spaceArray);
+            effectiveSpace = chosen.path("id").asLong();
+        }
+        ObjectNode request = mapper.createObjectNode();
+        request.put("query", query);
+        request.put("spaceId", effectiveSpace);
+        if (collectionId != null) request.put("collectionId", collectionId);
+        if (topK != null) request.put("topK", topK);
+        if (strategy != null && !strategy.isBlank()) request.put("strategy", strategy);
+        return compactAnswer(call("POST", "/knowledge/ask", request.toString(), true));
+    }
+
+    @Override
     public String videoEvidence(Long mediaId, Long startMs, Long endMs) throws Exception {
         JsonNode segments = call("GET", "/knowledge/sources/media/" + mediaId + "/segments", null, true);
         return compactSegments(segments, startMs, endMs);
@@ -164,6 +188,62 @@ public class DovideoApiClient implements ToolBackend {
         sessionToken = envelope.path("data").path("token").asText(null);
         if (sessionToken == null) throw new IOException("DoVideo login returned no token");
         return sessionToken;
+    }
+
+    private JsonNode pickDefaultSpace(JsonNode spaceArray) {
+        JsonNode first = null;
+        for (JsonNode space : spaceArray) {
+            if (first == null) first = space;
+            if (space.path("systemDefault").asBoolean(false)) return space;
+        }
+        return first;
+    }
+
+    /** Mirrors the upstream refusal shape so clients see one contract, not two. */
+    private String emptyAccountRefusal() {
+        ObjectNode out = mapper.createObjectNode();
+        out.put("answerability", "INSUFFICIENT_EVIDENCE");
+        out.put("answer", "当前知识库中没有找到足以支持这个回答的证据。");
+        out.putArray("citations");
+        out.putArray("warnings").add("账号下还没有任何知识空间，请先通过工作台导入视频。");
+        return out.toString();
+    }
+
+    /**
+     * Narrows the upstream answer to what an assistant needs: the full answer text
+     * (it is the payload, never truncated), citations with second-precision aliases,
+     * and quotes capped like every other text field.
+     */
+    private String compactAnswer(JsonNode data) {
+        ObjectNode out = mapper.createObjectNode();
+        out.put("answerability", data.path("answerability").asText("INSUFFICIENT_EVIDENCE"));
+        out.put("answer", data.path("answer").asText(""));
+        ArrayNode citations = out.putArray("citations");
+        for (JsonNode citation : data.path("citations").isArray()
+                ? data.path("citations") : mapper.createArrayNode()) {
+            ObjectNode item = citations.addObject();
+            item.put("segmentId", citation.path("segmentId").asText());
+            item.put("title", citation.path("title").asText());
+            if (citation.path("mediaId").isMissingNode() || citation.path("mediaId").isNull()) {
+                item.putNull("mediaId");
+            } else {
+                item.put("mediaId", citation.path("mediaId").asLong());
+            }
+            long startMs = citation.path("startMs").asLong(0);
+            long endMs = citation.path("endMs").asLong(0);
+            item.put("startMs", startMs);
+            item.put("endMs", endMs);
+            item.put("startSec", startMs / 1000);
+            item.put("endSec", endMs / 1000);
+            putTrimmed(item, "claim", citation.path("claim"));
+            putTrimmed(item, "quote", citation.path("quote"));
+        }
+        ArrayNode warnings = out.putArray("warnings");
+        for (JsonNode warning : data.path("warnings").isArray()
+                ? data.path("warnings") : mapper.createArrayNode()) {
+            warnings.add(warning.asText());
+        }
+        return out.toString();
     }
 
     private String compactSpaces(JsonNode data) {

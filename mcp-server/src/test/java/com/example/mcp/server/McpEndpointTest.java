@@ -49,7 +49,7 @@ class McpEndpointTest {
                         .content("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}")
                         .header("Authorization", "Bearer e2e-client-token"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.result.tools.length()").value(3));
+                .andExpect(jsonPath("$.result.tools.length()").value(4));
 
         when(backend.listSpaces()).thenReturn("[]");
         mockMvc.perform(post("/mcp").contentType(MediaType.APPLICATION_JSON)

@@ -77,7 +77,9 @@ wait_http http://127.0.0.1:5173/ "前端"
 
 if [[ -n "${MCP_CLIENT_TOKENS:-}" ]]; then
   echo "==> MCP 适配器 (9091)"
-  (cd mcp-server && MCP_SERVER_PORT=9091 \
+  # SERVER_PORT/SERVER_ADDRESS from .env target the backend; Spring's relaxed binding
+  # would hijack the adapter onto 9090, so scrub them in this subshell.
+  (cd mcp-server && unset SERVER_PORT SERVER_ADDRESS && MCP_SERVER_PORT=9091 \
     MCP_CLIENT_TOKENS="$MCP_CLIENT_TOKENS" \
     DOVIDEO_API_BASE="${DOVIDEO_API_BASE:-http://127.0.0.1:9090}" \
     DOVIDEO_API_TOKEN="${DOVIDEO_API_TOKEN:-}" \

@@ -74,6 +74,10 @@ def main():
     parser.add_argument("--url", default="http://127.0.0.1:9091/mcp")
     parser.add_argument("--token", required=True)
     parser.add_argument("--query", default="语音助手能听懂哪些动作指令")
+    parser.add_argument("--ask-query", default="语音助手能听懂哪些动作指令",
+                        help="Question the corpus CAN answer; must yield SUPPORTED citations")
+    parser.add_argument("--refusal-query", default="Kubernetes 调度器是怎么分配 Pod 的",
+                        help="Out-of-corpus question; must yield INSUFFICIENT_EVIDENCE")
     parser.add_argument("--space-id", type=int, default=None)
     args = parser.parse_args()
 
@@ -86,7 +90,8 @@ def main():
     tools = client.tools_list()
     print(f"[2] tools/list ok: {[t['name'] for t in tools]}")
     assert {t["name"] for t in tools} >= {
-        "list_knowledge_spaces", "search_video_knowledge", "get_video_evidence"}
+        "list_knowledge_spaces", "search_video_knowledge", "ask_video_knowledge",
+        "get_video_evidence"}
 
     spaces = client.call_tool("list_knowledge_spaces", {})
     print(f"[3] list_knowledge_spaces ok: {[(s['id'], s['name']) for s in spaces]}")
@@ -114,8 +119,32 @@ def main():
         print(f"    [{row['startSec']}-{row['endSec']}s] {(row.get('transcript') or '')[:60]}")
     assert evidence, "expected at least one raw evidence row"
 
+    ask_args = {"query": args.ask_query, "topK": 5}
+    if args.space_id:
+        ask_args["spaceId"] = args.space_id
+    answer = client.call_tool("ask_video_knowledge", ask_args)
+    print(f"[6] ask_video_knowledge ok: answerability={answer['answerability']}, "
+          f"{len(answer.get('citations', []))} citation(s)")
+    assert answer["answerability"] == "SUPPORTED", (
+        f"expected SUPPORTED for in-corpus query, got: {answer}")
+    assert answer["answer"].strip(), "expected non-empty answer"
+    for citation in answer["citations"]:
+        print(f"    [{citation['startSec']}-{citation['endSec']}s] {citation['title']}: "
+              f"{citation['quote'][:50]}…")
+        assert citation["quote"].strip() and citation["startMs"] >= 0, "citation must be anchored"
+
+    refusal_args = {"query": args.refusal_query, "topK": 5}
+    if args.space_id:
+        refusal_args["spaceId"] = args.space_id
+    refused = client.call_tool("ask_video_knowledge", refusal_args)
+    print(f"[7] ask_video_knowledge refusal ok: answerability={refused['answerability']}")
+    assert refused["answerability"] == "INSUFFICIENT_EVIDENCE", (
+        f"expected INSUFFICIENT_EVIDENCE for out-of-corpus query, got: {refused}")
+    assert not refused.get("citations"), "refusal must not carry citations"
+
     print("\nE2E PASSED: external assistant listed spaces, searched evidence, "
-          "and pulled timestamped raw evidence through MCP.")
+          "pulled timestamped raw evidence, asked a grounded question with verified "
+          "citations, and saw the refusal guardrail — all through MCP.")
 
 
 if __name__ == "__main__":

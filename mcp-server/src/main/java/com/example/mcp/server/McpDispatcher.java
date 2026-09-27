@@ -117,9 +117,12 @@ public class McpDispatcher {
         serverInfo.put("title", "DoVideo Personal Video Knowledge");
         serverInfo.put("version", SERVER_VERSION);
         result.put("instructions",
-                "Read-only access to a personal video knowledge base. Search first with "
-                + "search_video_knowledge, then fetch raw transcript/OCR of a hit with get_video_evidence. "
-                + "Every hit carries mediaId and millisecond timestamps — cite them back to the user.");
+                "Read-only access to a personal video knowledge base. For questions, call "
+                + "ask_video_knowledge: it returns a grounded natural-language answer with "
+                + "server-verified citations (title, mediaId, timestamps, verbatim quote) or an "
+                + "INSUFFICIENT_EVIDENCE refusal — always relay that refusal instead of guessing. "
+                + "Use search_video_knowledge to browse raw evidence hits and get_video_evidence "
+                + "to pull transcript/OCR around a timestamp. Cite mediaId + seconds back to the user.");
         return result;
     }
 
@@ -156,6 +159,31 @@ public class McpDispatcher {
         strategy.put("description", "Recall strategy (default hybrid)");
         searchSchema.putArray("required").add("query");
 
+        ObjectNode ask = tools.addObject();
+        ask.put("name", "ask_video_knowledge");
+        ask.put("description",
+                "Ask a natural-language question over the video knowledge base and get a "
+                + "grounded answer: every claim is backed by server-verified citations "
+                + "(source title, mediaId, millisecond timestamps, verbatim quote). Returns "
+                + "answerability SUPPORTED with citations, or INSUFFICIENT_EVIDENCE when the "
+                + "corpus cannot support an answer — relay that refusal instead of guessing.");
+        ObjectNode askSchema = ask.putObject("inputSchema");
+        askSchema.put("type", "object");
+        ObjectNode askProps = askSchema.putObject("properties");
+        askProps.putObject("query").put("type", "string")
+                .put("description", "The question to answer from video evidence");
+        askProps.putObject("spaceId").put("type", "integer")
+                .put("description", "Knowledge space to ask against; omit to use the default space");
+        askProps.putObject("collectionId").put("type", "integer")
+                .put("description", "Narrow to one collection inside the space (optional)");
+        askProps.putObject("topK").put("type", "integer").put("minimum", 1).put("maximum", 20)
+                .put("description", "Evidence units exposed to the answer model (default 5)");
+        ObjectNode askStrategy = askProps.putObject("strategy");
+        askStrategy.put("type", "string");
+        askStrategy.putArray("enum").add("vector").add("keyword").add("hybrid");
+        askStrategy.put("description", "Recall strategy (default hybrid)");
+        askSchema.putArray("required").add("query");
+
         ObjectNode evidence = tools.addObject();
         evidence.put("name", "get_video_evidence");
         evidence.put("description",
@@ -184,6 +212,12 @@ public class McpDispatcher {
                 case "search_video_knowledge" -> backend.searchKnowledge(
                         requiredString(args, "query", tool),
                         optionalLong(args, "spaceId"),
+                        optionalInt(args, "topK"),
+                        optionalString(args, "strategy"));
+                case "ask_video_knowledge" -> backend.askKnowledge(
+                        requiredString(args, "query", tool),
+                        optionalLong(args, "spaceId"),
+                        optionalLong(args, "collectionId"),
                         optionalInt(args, "topK"),
                         optionalString(args, "strategy"));
                 case "get_video_evidence" -> backend.videoEvidence(

@@ -54,15 +54,17 @@ class McpDispatcherTest {
     }
 
     @Test
-    void toolsListExposesExactlyTheThreeReadOnlyTools() throws Exception {
+    void toolsListExposesExactlyTheFourReadOnlyTools() throws Exception {
         JsonNode tools = call("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}")
                 .path("result").path("tools");
-        assertEquals(3, tools.size());
+        assertEquals(4, tools.size());
         assertEquals("list_knowledge_spaces", tools.get(0).path("name").asText());
         assertEquals("search_video_knowledge", tools.get(1).path("name").asText());
         assertTrue(tools.get(1).path("inputSchema").path("required").toString().contains("query"));
-        assertEquals("get_video_evidence", tools.get(2).path("name").asText());
-        assertTrue(tools.get(2).path("inputSchema").path("required").toString().contains("mediaId"));
+        assertEquals("ask_video_knowledge", tools.get(2).path("name").asText());
+        assertTrue(tools.get(2).path("inputSchema").path("required").toString().contains("query"));
+        assertEquals("get_video_evidence", tools.get(3).path("name").asText());
+        assertTrue(tools.get(3).path("inputSchema").path("required").toString().contains("mediaId"));
     }
 
     @Test
@@ -70,12 +72,29 @@ class McpDispatcherTest {
         when(backend.searchKnowledge(eq("浏阳河"), isNull(), isNull(), isNull()))
                 .thenReturn("[{\"title\":\"洋来作品.mp4\"}]");
         JsonNode result = call("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\","
-                + "\"params\":{\"name\":\"search_video_knowledge\","
-                + "\"arguments\":{\"query\":\"浏阳河\"}}}")
+                        + "\"params\":{\"name\":\"search_video_knowledge\","
+                        + "\"arguments\":{\"query\":\"浏阳河\"}}}")
                 .path("result");
         assertFalse(result.path("isError").asBoolean(false));
         assertEquals("text", result.path("content").get(0).path("type").asText());
         assertTrue(result.path("content").get(0).path("text").asText().contains("洋来作品"));
+    }
+
+    @Test
+    void askToolForwardsArgumentsToBackend() throws Exception {
+        when(backend.askKnowledge(eq("三次握手的过程是什么？"), eq(6L), eq(9L), eq(8), eq("hybrid")))
+                .thenReturn("{\"answerability\":\"SUPPORTED\",\"answer\":\"三次握手是…\",\"citations\":[]}");
+        JsonNode result = call("{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\","
+                        + "\"params\":{\"name\":\"ask_video_knowledge\","
+                        + "\"arguments\":{\"query\":\"三次握手的过程是什么？\","
+                        + "\"spaceId\":6,\"collectionId\":9,\"topK\":8,\"strategy\":\"hybrid\"}}}")
+                .path("result");
+        assertFalse(result.path("isError").asBoolean(false));
+        assertTrue(result.path("content").get(0).path("text").asText().contains("三次握手"));
+
+        assertEquals(-32602, call("{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\","
+                        + "\"params\":{\"name\":\"ask_video_knowledge\",\"arguments\":{}}}")
+                .path("error").path("code").asInt());
     }
 
     @Test
