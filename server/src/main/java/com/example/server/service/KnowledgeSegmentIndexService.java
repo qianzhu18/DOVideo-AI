@@ -89,6 +89,7 @@ public class KnowledgeSegmentIndexService {
             upsertVectors(source, version, segments);
             version.setStatus(STATUS_READY);
             versionMapper.updateById(version);
+            sourceService.updateIndexStatus(source, KnowledgeSourceService.STATUS_READY);
             auditService.record(source.getOwnerUserId(), "SOURCE_INDEXED", "SOURCE", source.getId(),
                     source.getSpaceId(), source.getCollectionId(),
                     "segments=" + segments.size() + ";version=" + version.getVersionNo());
@@ -97,6 +98,7 @@ public class KnowledgeSegmentIndexService {
             version.setStatus(STATUS_FAILED);
             version.setFailureReason(abbreviate(e.getMessage(), 1000));
             versionMapper.updateById(version);
+            sourceService.updateIndexStatus(source, KnowledgeSourceService.STATUS_FAILED);
             throw e;
         }
     }
@@ -111,6 +113,7 @@ public class KnowledgeSegmentIndexService {
             version.setEmbeddingModel(embeddingModel);
             version.setFailureReason(abbreviate(reason, 1000));
             versionMapper.updateById(version);
+            sourceService.updateIndexStatus(source, KnowledgeSourceService.STATUS_FAILED);
         } catch (RuntimeException ignored) {
             // Source/version already missing: the failure record would have nothing to attach to.
         }
@@ -120,6 +123,20 @@ public class KnowledgeSegmentIndexService {
     public List<KnowledgeSegment> indexSource(Long userId, Long sourceId) {
         KnowledgeSource source = sourceService.requireOwnedSource(userId, sourceId);
         return indexMedia(source.getMediaId());
+    }
+
+    /**
+     * Owner-checked read of the authoritative segment rows backing a media asset.
+     * The MCP adapter cites evidence through this; it never touches the segment tables.
+     */
+    public List<KnowledgeSegment> listSegments(Long userId, Long mediaId) {
+        KnowledgeSource source = sourceService.requireSourceByMediaId(mediaId);
+        if (!userId.equals(source.getOwnerUserId())) {
+            throw new SecurityException("无权访问该内容源");
+        }
+        return segmentMapper.selectList(new QueryWrapper<KnowledgeSegment>()
+                .eq("media_id", mediaId)
+                .orderByAsc("start_ms"));
     }
 
     private List<KnowledgeSegment> buildSegments(KnowledgeSource source, KnowledgeSourceVersion version) {

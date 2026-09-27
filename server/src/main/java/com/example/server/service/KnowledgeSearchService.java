@@ -233,6 +233,7 @@ public class KnowledgeSearchService {
             hits.add(new KnowledgeSearchHit(
                     segment.getId(),
                     source.getId(),
+                    source.getSourceType(),
                     segment.getMediaId(),
                     source.getTitle(),
                     segment.getStartMs() == null ? 0 : segment.getStartMs(),

@@ -8,6 +8,7 @@ import com.example.server.dto.TaskStatus;
 import com.example.server.dto.TaskStage;
 import com.example.server.entity.MediaFile;
 import com.example.server.exception.BusinessException;
+import com.example.server.service.task.AnalysisTaskService;
 import com.example.server.utils.AnalysisTaskKeys;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.redisson.api.RRateLimiter;
@@ -36,6 +37,7 @@ public class AnalysisDispatchService {
     private final RocketMQTemplate rocketMQTemplate;
     private final RedissonClient redissonClient;
     private final TaskEventService taskEventService;
+    private final AnalysisTaskService taskLedger;
     private final String analysisTopic;
 
     public AnalysisDispatchService(AiService aiService,
@@ -44,6 +46,7 @@ public class AnalysisDispatchService {
                                    RocketMQTemplate rocketMQTemplate,
                                    RedissonClient redissonClient,
                                    TaskEventService taskEventService,
+                                   AnalysisTaskService taskLedger,
                                    @Value("${rocketmq.topic.video-analysis:video-analysis-topic}")
                                    String analysisTopic) {
         this.aiService = aiService;
@@ -52,6 +55,7 @@ public class AnalysisDispatchService {
         this.rocketMQTemplate = rocketMQTemplate;
         this.redissonClient = redissonClient;
         this.taskEventService = taskEventService;
+        this.taskLedger = taskLedger;
         this.analysisTopic = analysisTopic;
     }
 
@@ -98,6 +102,10 @@ public class AnalysisDispatchService {
             log.warn("analysis_queued_event_failed mediaId={} userId={}",
                     mediaId, mediaFile.getUserId(), eventError);
         }
+        // Ledger write happens after the broker accepted the message: only an
+        // accepted task is worth recording (including the revision reopen
+        // COMPLETED -> QUEUED).
+        taskLedger.onSubmitted(mediaId, mediaFile.getUserId(), contentHash, goal, resolvedMode);
         return SubmissionResult.ACCEPTED;
     }
 

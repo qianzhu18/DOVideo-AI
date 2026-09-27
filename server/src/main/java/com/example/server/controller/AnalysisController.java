@@ -22,6 +22,7 @@ import com.example.server.service.MediaService;
 import com.example.server.service.TaskEventService;
 import com.example.server.service.VideoContextNotReadyException;
 import com.example.server.service.mode.ModeRouter;
+import com.example.server.service.task.AnalysisTaskService;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
@@ -57,6 +58,7 @@ public class AnalysisController {
     private final TaskEventService taskEventService;
     private final AnalysisStatusService statusService;
     private final ModeRouter modeRouter;
+    private final AnalysisTaskService taskLedger;
     private final Executor aiTaskExecutor;
 
     public AnalysisController(AiService aiService,
@@ -68,6 +70,7 @@ public class AnalysisController {
                               TaskEventService taskEventService,
                               AnalysisStatusService statusService,
                               ModeRouter modeRouter,
+                              AnalysisTaskService taskLedger,
                               @Qualifier("aiTaskExecutor") Executor aiTaskExecutor) {
         this.aiService = aiService;
         this.dispatchService = dispatchService;
@@ -78,6 +81,7 @@ public class AnalysisController {
         this.taskEventService = taskEventService;
         this.statusService = statusService;
         this.modeRouter = modeRouter;
+        this.taskLedger = taskLedger;
         this.aiTaskExecutor = aiTaskExecutor;
     }
 
@@ -234,6 +238,20 @@ public class AnalysisController {
         mediaService.requireOwnedMedia(id, userId);
         return Result.ok(telemetry.latest(
                 id, normalizeText(goal, "分析目标"), AnalysisMode.fromRequest(mode)));
+    }
+
+    /**
+     * Task manifest of the current user: one row per (media, goal, mode) with
+     * state, delivery count, latest stage and failure reason. It answers the
+     * two audit questions of batch reliability — "how far did each video in
+     * this batch get" and "did a new batch re-run already-succeeded videos"
+     * (a succeeded row staying COMPLETED with a frozen attemptCount means no
+     * re-run happened).
+     */
+    @GetMapping("/tasks")
+    public Result<List<AnalysisTaskService.AnalysisTaskView>> taskManifest(
+            @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId) {
+        return Result.ok(taskLedger.manifest(userId));
     }
 
     /**

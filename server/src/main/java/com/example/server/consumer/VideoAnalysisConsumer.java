@@ -11,6 +11,7 @@ import com.example.server.service.AgentLoopService;
 import com.example.server.service.FailedAnalysisTaskService;
 import com.example.server.service.MediaService;
 import com.example.server.service.TaskEventService;
+import com.example.server.service.task.AnalysisTaskService;
 import com.example.server.utils.AnalysisTaskKeys;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
 import org.apache.rocketmq.spring.core.RocketMQListener;
@@ -24,20 +25,29 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.NoSuchElementException;
 
 @Component
 @RocketMQMessageListener(
         topic = "${rocketmq.topic.video-analysis:video-analysis-topic}",
         consumerGroup = "${rocketmq.consumer.group:video-analysis-group}",
-        // maxReconsumeTimes 计的是「重投次数」，2 次重投 = 最多 3 次投递，与下面的
-        // MAX_DELIVERY_ATTEMPTS（计投递次数）对齐。不设的话，一旦异常发生在 Redis 计数之前，
-        // 应用侧上限失效，会退化成 MQ 默认的 16 次重投空转。
+        // maxReconsumeTimes counts *redeliveries*: 2 redeliveries = at most 3
+        // deliveries, aligned with MAX_DELIVERY_ATTEMPTS below (which counts
+        // deliveries). Without it, an exception thrown before the Redis counter
+        // is incremented would bypass the app-side cap and degrade to the
+        // broker default of 16 redeliveries.
         //
-        // 消费并发（consumeThreadNumber / consumeThreadMax）刻意没有在这里设置：
-        // 两个属性名在 rocketmq-spring 各版本间有变更（consumeThreadMax 自 2.2.x 起废弃），
-        // 若与容器默认的 min 值冲突会在启动期抛 "consumeThreadMin is larger than consumeThreadMax"。
-        // 本环境无法编译校验属性名，故留给确认版本后再补，避免引入启动失败风险。
+        // Consumer concurrency was verified against the actual semantics of
+        // rocketmq-spring-boot 2.3.0 (decompiled
+        // DefaultRocketMQListenerContainer#initRocketMQPushConsumer):
+        // consumeThreadNumber -> setConsumeThreadMin, consumeThreadMax ->
+        // setConsumeThreadMax. Setting both to the same value yields a
+        // fixed-size pool, which finally caps consumer-side concurrency
+        // (previously unbounded) and can never trip a min>max validation;
+        // 4 matches the aiTaskExecutor core size.
+        consumeThreadNumber = 4,
+        consumeThreadMax = 4,
         maxReconsumeTimes = 2)
 public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> {
 
@@ -56,6 +66,7 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> 
     private final FailedAnalysisTaskService failedTaskService;
     private final MediaService mediaService;
     private final TaskEventService taskEventService;
+    private final AnalysisTaskService taskLedger;
     private final String deadLetterTopic;
 
     public VideoAnalysisConsumer(AiService aiService,
@@ -66,6 +77,7 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> 
                                  FailedAnalysisTaskService failedTaskService,
                                  MediaService mediaService,
                                  TaskEventService taskEventService,
+                                 AnalysisTaskService taskLedger,
                                  @Value("${rocketmq.topic.video-analysis-dead:video-analysis-dead-topic}")
                                  String deadLetterTopic) {
         this.aiService = aiService;
@@ -76,6 +88,7 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> 
         this.failedTaskService = failedTaskService;
         this.mediaService = mediaService;
         this.taskEventService = taskEventService;
+        this.taskLedger = taskLedger;
         this.deadLetterTopic = deadLetterTopic;
     }
 
@@ -116,6 +129,7 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> 
             taskEventService.publishAnalysis(mediaId, msg.getUserGoal(), mode,
                     TaskStatus.of(TaskStatus.State.PROCESSING, "视频分析任务开始执行"),
                     TaskStage.CONSUMING);
+            taskLedger.onStarted(mediaId, null, contentHash, msg.getUserGoal(), mode, (int) attempt);
             if (msg.isRevision()) {
                 if (!checkpointService.beginStagedRevision(mediaId, msg.getUserGoal(), mode)) {
                     throw new IllegalStateException("修订任务状态不存在，等待消息队列重试");
@@ -135,6 +149,7 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> 
                         // A reused result skips asyncAnalyze entirely, so the knowledge
                         // index must be fed here too or the source stays PENDING forever.
                         aiService.indexKnowledge(mediaId);
+                        taskLedger.onCompleted(mediaId, contentHash, msg.getUserGoal(), mode, "COMPLETED_REUSED");
                         return;
                     }
                     redisTemplate.delete(completedKey);
@@ -157,8 +172,11 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> 
                 taskEventService.publishAnalysis(mediaId, msg.getUserGoal(), mode,
                         TaskStatus.completed(completed), TaskStage.COMPLETED);
             }
+            taskLedger.onCompleted(mediaId, contentHash, msg.getUserGoal(), mode, "COMPLETED");
         } catch (AgentLoopService.BudgetExceededException e) {
             saveStage(mediaId, msg.getUserGoal(), mode, TaskStage.BUDGET_EXHAUSTED);
+            taskLedger.onFailed(mediaId, contentHash, msg.getUserGoal(), mode,
+                    "BUDGET_EXHAUSTED", "BudgetExceeded", e.getMessage());
             taskEventService.publishAnalysis(mediaId, msg.getUserGoal(), mode,
                     TaskStatus.of(TaskStatus.State.FAILED, e.getMessage()),
                     TaskStage.BUDGET_EXHAUSTED);
@@ -173,6 +191,7 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> 
                 retrying = true;
                 redisTemplate.expire(activeKey, ACTIVE_TTL);
                 saveStage(mediaId, msg.getUserGoal(), mode, TaskStage.RETRYING);
+                taskLedger.onRetryScheduled(mediaId, contentHash, msg.getUserGoal(), mode, (int) attempt);
                 taskEventService.publishAnalysis(mediaId, msg.getUserGoal(), mode,
                         TaskStatus.of(TaskStatus.State.PROCESSING, "本次执行失败，等待消息队列重试"),
                         TaskStage.RETRYING);
@@ -190,6 +209,8 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> 
                     }
                     rocketMQTemplate.convertAndSend(deadLetterTopic, msg);
                     saveStage(mediaId, msg.getUserGoal(), mode, TaskStage.DEAD_LETTERED);
+                    taskLedger.onFailed(mediaId, contentHash, msg.getUserGoal(), mode,
+                            "DEAD_LETTERED", e.getClass().getSimpleName(), e.getMessage());
                     taskEventService.publishAnalysis(mediaId, msg.getUserGoal(), mode,
                             TaskStatus.of(TaskStatus.State.FAILED, "分析失败，已进入人工处理队列"),
                             TaskStage.DEAD_LETTERED);
@@ -207,7 +228,7 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> 
             throw new IllegalStateException("视频分析消费失败", e);
         } finally {
             if (acquired) {
-                if (!retrying) redisTemplate.delete(java.util.List.of(activeKey, attemptsKey));
+                if (!retrying) redisTemplate.delete(List.of(activeKey, attemptsKey));
                 if (lock.isHeldByCurrentThread()) {
                     lock.unlock();
                 }
@@ -277,9 +298,10 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> 
             String contentHash = AnalysisTaskKeys.normalizeContentHash(
                     msg.getMediaId(), msg.getContentHash());
             String goalDigest = AnalysisTaskKeys.goalDigest(msg.getUserGoal(), mode);
-            redisTemplate.delete(java.util.List.of(
+            redisTemplate.delete(List.of(
                     AnalysisTaskKeys.active(contentHash, goalDigest),
                     AnalysisTaskKeys.attempts(contentHash, goalDigest)));
+            taskLedger.onReleased(msg.getMediaId(), contentHash, msg.getUserGoal(), mode);
             saveStage(msg.getMediaId(), msg.getUserGoal(), mode, TaskStage.DEAD_LETTERED);
             taskEventService.publishAnalysis(msg.getMediaId(), msg.getUserGoal(), mode,
                     TaskStatus.of(TaskStatus.State.FAILED, "任务消息非法，已终止"),

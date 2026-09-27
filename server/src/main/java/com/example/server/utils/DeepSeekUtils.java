@@ -199,6 +199,18 @@ public class DeepSeekUtils {
     }
 
     /**
+     * Structured generation for the cross-video knowledge layer. The caller is responsible for
+     * treating its output as untrusted and validating every source reference before returning it.
+     */
+    public <T> T structuredKnowledgeChat(String prompt, Class<T> type) {
+        try {
+            return structuredChat("KNOWLEDGE_ANSWER", prompt, type);
+        } catch (Exception e) {
+            throw new IllegalStateException("知识库回答生成失败", e);
+        }
+    }
+
+    /**
      * 意图路由分类:仅凭用户的分析目标文本,判断最合适的分析模式。
      *
      * <p>返回的是{@link ModeClassification 原始字符串结果}而非枚举,把"模型可能返回非法值"
@@ -447,10 +459,13 @@ public class DeepSeekUtils {
         }
     }
 
-    private boolean isRetriableModelFailure(Throwable error) {
+    // Package-private and static: pure classification over the cause chain, no instance state.
+    static boolean isRetriableModelFailure(Throwable error) {
         Throwable current = error;
         for (int depth = 0; current != null && depth < MAX_CAUSE_DEPTH; depth++) {
             if (current instanceof NonRetriableException) return false;
+            // Retrying cannot help once the agent time budget is gone; fail fast instead.
+            if (current instanceof AgentExecutionBudget.DeadlineExceededException) return false;
             if (current instanceof RetriableException) return true;
             if (current instanceof HttpException httpException) {
                 int status = httpException.statusCode();
@@ -459,7 +474,11 @@ public class DeepSeekUtils {
             if (current.getCause() == current) break;
             current = current.getCause();
         }
-        return false;
+        // Transport-level failures (EOF mid-body, connection reset, SSL handshake) surface
+        // as plain IOExceptions with no HTTP status. They are overwhelmingly transient, so
+        // the safe default is retry: classifying one as permanent dead-letters an entire
+        // agent run on a single network blip.
+        return true;
     }
 
     private void waitBeforeRetry(int attempt) {

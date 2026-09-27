@@ -274,6 +274,7 @@
                 controls
                 playsinline
                 preload="metadata"
+                @loadedmetadata="handlePlaybackMetadata"
                 @error="handlePlaybackError"
             ></video>
             <div v-else-if="sidebar.playbackLoading" class="video-evidence-loading">正在载入原视频...</div>
@@ -492,7 +493,12 @@
         </div>
       </div>
     </main>
-    <KnowledgeLibrary v-if="activeView === 'knowledge'" :user="currentUser" @request-login="openAuthModal" />
+    <KnowledgeLibrary
+      v-if="activeView === 'knowledge'"
+      :user="currentUser"
+      @request-login="openAuthModal"
+      @open-evidence="openKnowledgeEvidence"
+    />
   </div>
 </template>
 
@@ -527,6 +533,7 @@ const resumableChunks = ref({ done: 0, total: 0 })
 const list = ref([])
 const searchQuery = ref('')
 const videoPlayer = ref(null)
+const pendingKnowledgeSeek = ref(null)
 const sidebarPanel = ref(null)
 const sidebarBody = ref(null)
 const authPanel = ref(null)
@@ -996,6 +1003,33 @@ const seekEvidence = event => {
 }
 
 const seekToEvidence = timestampMs => seekVideo(Number(timestampMs) / 1000)
+
+const handlePlaybackMetadata = () => {
+  const pending = pendingKnowledgeSeek.value
+  if (!pending || String(sidebar.value.mediaId) !== String(pending.mediaId)) return
+  pendingKnowledgeSeek.value = null
+  seekToEvidence(pending.timestampMs)
+}
+
+const openKnowledgeEvidence = async ({ mediaId, timestampMs }) => {
+  let item = list.value.find(candidate => String(candidate.id) === String(mediaId))
+  if (!item) {
+    await fetchList()
+    item = list.value.find(candidate => String(candidate.id) === String(mediaId))
+  }
+  if (!item) {
+    showMsg('原视频不在当前视频列表中，暂时无法回看', true)
+    return
+  }
+  activeView.value = 'workspace'
+  pendingKnowledgeSeek.value = { mediaId, timestampMs }
+  await openAgent(item)
+  await nextTick()
+  if (pendingKnowledgeSeek.value && videoPlayer.value?.readyState >= 1) {
+    handlePlaybackMetadata()
+  }
+}
+
 const formatEvidenceTime = timestampMs => {
   const seconds = Math.max(0, Math.floor(Number(timestampMs) / 1000))
   const hours = Math.floor(seconds / 3600)

@@ -40,8 +40,14 @@ public class KnowledgeSourceService {
     private static final Logger log = LoggerFactory.getLogger(KnowledgeSourceService.class);
 
     public static final String SOURCE_TYPE_VIDEO = "VIDEO";
+    /** Uploaded Markdown/plain-text script; indexed into the same retrieval space. */
+    public static final String SOURCE_TYPE_SCRIPT = "SCRIPT";
     public static final String STATUS_PENDING = "PENDING";
     public static final String STATUS_DELETED = "DELETED";
+    /** Set once segments+vectors are queryable; until then the source is not retrievable. */
+    public static final String STATUS_READY = "READY";
+    /** Index attempt failed; the failure reason lives on the current version row. */
+    public static final String STATUS_FAILED = "FAILED";
 
     static final int MAX_TAGS_PER_SOURCE = 20;
     static final int MAX_TAG_LENGTH = 64;
@@ -261,6 +267,16 @@ public class KnowledgeSourceService {
         sourceMapper.updateById(source);
         auditService.record(userId, "SOURCE_DELETED", "SOURCE", source.getId(), source.getSpaceId(), source.getCollectionId(),
                 "mediaId=" + mediaId);
+    }
+
+    /**
+     * Reflects an index outcome on the source row so list views show real readiness
+     * instead of a PENDING that never clears. Called by the index service only.
+     */
+    public void updateIndexStatus(KnowledgeSource source, String status) {
+        if (STATUS_DELETED.equals(source.getStatus())) return;
+        source.setStatus(status);
+        sourceMapper.updateById(source);
     }
 
     /** Ownership guard shared with the index and search services; throws for missing or foreign sources. */

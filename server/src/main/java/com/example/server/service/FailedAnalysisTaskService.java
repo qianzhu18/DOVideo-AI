@@ -7,6 +7,7 @@ import com.example.server.dto.TaskStatus;
 import com.example.server.dto.TaskStage;
 import com.example.server.entity.FailedAnalysisTask;
 import com.example.server.mapper.FailedAnalysisTaskMapper;
+import com.example.server.service.task.AnalysisTaskService;
 import com.example.server.utils.AnalysisTaskKeys;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.slf4j.Logger;
@@ -41,18 +42,21 @@ public class FailedAnalysisTaskService {
     private final RocketMQTemplate rocketMQTemplate;
     private final StringRedisTemplate redisTemplate;
     private final TaskEventService taskEventService;
+    private final AnalysisTaskService taskLedger;
     private final String analysisTopic;
 
     public FailedAnalysisTaskService(FailedAnalysisTaskMapper taskMapper,
                                      RocketMQTemplate rocketMQTemplate,
                                      StringRedisTemplate redisTemplate,
                                      TaskEventService taskEventService,
+                                     AnalysisTaskService taskLedger,
                                      @Value("${rocketmq.topic.video-analysis:video-analysis-topic}")
                                      String analysisTopic) {
         this.taskMapper = taskMapper;
         this.rocketMQTemplate = rocketMQTemplate;
         this.redisTemplate = redisTemplate;
         this.taskEventService = taskEventService;
+        this.taskLedger = taskLedger;
         this.analysisTopic = analysisTopic;
     }
 
@@ -125,6 +129,10 @@ public class FailedAnalysisTaskService {
             if (taskMapper.updateById(task) != 1) {
                 throw new IllegalStateException("失败任务重放台账更新失败");
             }
+            // The ledger transition FAILED->QUEUED happens after the replay
+            // succeeded; the ledger is fault-tolerant by design and can never
+            // fail the replay itself.
+            taskLedger.onRequeued(task.getMediaId(), contentHash, task.getUserGoal(), mode);
         } catch (RuntimeException e) {
             if (!dispatched) {
                 redisTemplate.delete(activeKey);

@@ -94,6 +94,55 @@
           </div>
 
           <div class="rail-divider"></div>
+          <div class="rail-heading">
+            <span>脚本 / 笔记</span>
+            <button
+              type="button"
+              class="icon-action"
+              :disabled="!selectedSpaceId"
+              aria-label="上传口播稿或笔记"
+              @click="scriptComposerOpen = !scriptComposerOpen"
+            >+</button>
+          </div>
+          <form v-if="scriptComposerOpen" class="rail-form" @submit.prevent="createScript">
+            <label>
+              <span>标题（留空取首行）</span>
+              <input v-model="newScriptTitle" maxlength="255" placeholder="例如：缓存击穿口播稿" />
+            </label>
+            <label>
+              <span>粘贴 Markdown 或纯文本，空行分段</span>
+              <textarea
+                v-model="newScriptContent"
+                rows="6"
+                maxlength="200000"
+                placeholder="口播稿 / 课程笔记；每个段落会成为独立的知识单元并进入跨视频检索"
+                aria-label="脚本内容"
+              ></textarea>
+            </label>
+            <div class="form-actions">
+              <button type="button" @click="scriptComposerOpen = false">取消</button>
+              <button class="text-action" :disabled="saving || !newScriptContent.trim()">
+                {{ saving ? '索引中…' : '上传并索引' }}
+              </button>
+            </div>
+          </form>
+
+          <div class="rail-divider"></div>
+          <div class="rail-heading">
+            <span>MCP 出口</span>
+            <span class="mcp-dot" :class="mcpAlive === null ? 'unknown' : (mcpAlive ? 'on' : 'off')"
+                  :title="mcpAlive === null ? '探测中' : (mcpAlive ? '适配器在线 (9091)' : '适配器未启动')"></span>
+          </div>
+          <div class="mcp-panel">
+            <p class="mcp-hint">把你的视频知识库挂给外部 AI 助手（Cursor / Cherry Studio 等支持 Streamable HTTP 的客户端）：</p>
+            <button type="button" class="mcp-endpoint" title="点击复制端点" @click="copyText(mcpEndpoint, '端点已复制')">
+              {{ mcpEndpoint }}
+            </button>
+            <button type="button" class="mcp-config" title="点击复制客户端配置" @click="copyText(mcpClientConfig, '客户端配置已复制')">{{ mcpClientConfig }}</button>
+            <p class="mcp-hint">将 <code>&lt;令牌&gt;</code> 换成服务端 <code>.env</code> 里 <code>MCP_CLIENT_TOKENS</code> 配置的值；显示离线时先运行 <code>./scripts/dev-up.sh</code>。三个只读工具：列空间 / 跨视频搜证据 / 取原始转写。</p>
+          </div>
+
+          <div class="rail-divider"></div>
           <div class="rail-heading folder-heading">
             <span>目录</span>
             <button type="button" class="icon-action" :disabled="!selectedSpaceId" aria-label="新建目录" @click="openCollectionComposer(selectedCollectionId)">+</button>
@@ -145,33 +194,72 @@
             </div>
           </header>
 
-          <form class="cross-search" @submit.prevent="searchKnowledge">
+          <form class="cross-search" @submit.prevent="askKnowledge">
             <div class="cross-search-row">
               <input
                 v-model="searchQuery"
                 maxlength="500"
-                placeholder="跨视频提问，例如：这个空间里讲过哪些要点？"
-                aria-label="跨视频检索"
+                placeholder="问问这个知识空间，例如：视频里解释缓存击穿的步骤是什么？"
+                aria-label="向知识空间提问"
               />
-              <button type="submit" class="lime-button" :disabled="searching || !searchQuery.trim()">
-                {{ searching ? '检索中…' : '检索' }}
+              <button type="submit" class="lime-button" :disabled="asking || searching || !searchQuery.trim()">
+                {{ asking ? '整理证据中…' : '提问' }}
+              </button>
+              <button type="button" class="subtle-button evidence-only-button" :disabled="asking || searching || !searchQuery.trim()" @click="searchKnowledge">
+                {{ searching ? '检索中…' : '仅搜证据' }}
               </button>
             </div>
-            <p v-if="searchError" class="cross-search-error" role="alert">{{ searchError }}</p>
+            <p class="cross-search-hint">回答会附原文引用；点击视频时间可打开原片回看。</p>
+            <p v-if="answerError || searchError" class="cross-search-error" role="alert">{{ answerError || searchError }}</p>
           </form>
+
+          <section v-if="answerResult" class="answer-results" :class="{ 'is-insufficient': answerResult.answerability !== 'SUPPORTED' }" aria-live="polite">
+            <header class="answer-results-head">
+              <div class="answer-status">
+                <span class="answer-status-mark">{{ answerResult.answerability === 'SUPPORTED' ? '有证据支持' : '证据不足' }}</span>
+                <span v-if="answerResult.citations?.length">{{ answerResult.citations.length }} 条引用</span>
+              </div>
+              <button type="button" class="subtle-button" @click="answerResult = null">收起</button>
+            </header>
+            <p class="answer-copy">{{ answerResult.answer }}</p>
+            <ul v-if="answerResult.citations?.length" class="answer-citation-list" aria-label="回答引用">
+              <li v-for="(citation, index) in answerResult.citations" :key="citation.segmentId" class="answer-citation">
+                <div class="answer-citation-meta">
+                  <span class="citation-index">{{ String(index + 1).padStart(2, '0') }}</span>
+                  <strong :title="citation.title">{{ citation.title || '未命名来源' }}</strong>
+                  <button
+                    v-if="citation.mediaId != null"
+                    type="button"
+                    class="citation-time"
+                    :aria-label="`打开 ${citation.title} ${formatMs(citation.startMs)} 的视频证据`"
+                    @click="$emit('open-evidence', { mediaId: citation.mediaId, timestampMs: citation.startMs })"
+                  >{{ formatMs(citation.startMs) }}–{{ formatMs(citation.endMs) }} ↗</button>
+                  <span v-else class="citation-source-type">文本来源</span>
+                </div>
+                <p v-if="citation.claim" class="citation-claim">{{ citation.claim }}</p>
+                <blockquote>{{ citation.quote }}</blockquote>
+              </li>
+            </ul>
+            <ul v-if="answerResult.warnings?.length" class="answer-warnings">
+              <li v-for="warning in answerResult.warnings" :key="warning">{{ warning }}</li>
+            </ul>
+          </section>
 
           <section v-if="searched" class="search-results" aria-label="跨视频检索结果">
             <header class="search-results-head">
               <span>检索结果</span>
               <button type="button" class="subtle-button" @click="closeSearchResults">收起</button>
             </header>
-            <p v-if="searchResults.length === 0" class="search-empty">未检索到支持证据。</p>
+            <!-- 检索是空间级的：空空间里"无证据"是必然结果，必须提示用户切换空间而不是让他误判检索坏了 -->
+            <p v-if="searchResults.length === 0" class="search-empty">
+              未检索到支持证据。{{ sources.length === 0 ? '当前空间还没有内容源——请检查左侧是否选错了空间（检索只在所选空间内进行）。' : '换一个更贴近视频原话的问法再试。' }}
+            </p>
             <ul v-else class="search-hit-list">
               <li v-for="hit in searchResults" :key="hit.segmentId" class="search-hit">
                 <div class="search-hit-meta">
                   <strong :title="hit.title">{{ hit.title }}</strong>
                   <span class="search-hit-time">{{ formatMs(hit.startMs) }} – {{ formatMs(hit.endMs) }}</span>
-                  <span class="search-hit-kind">{{ hit.matchType === 'vector' ? '语义' : '关键词' }}</span>
+                  <span class="search-hit-kind">{{ hit.sourceType === 'SCRIPT' ? '脚本' : '视频' }}·{{ hit.matchType === 'vector' ? '语义' : '关键词' }}</span>
                 </div>
                 <p>{{ hit.transcript || hit.ocrText || hit.summary }}</p>
               </li>
@@ -218,7 +306,44 @@
                   <button type="button" class="subtle-button" @click="closeTagEditor">取消</button>
                   <button type="submit" class="subtle-button text-action" :disabled="saving || !newTagDraft.trim()">添加</button>
                 </form>
+                <div v-if="linksPanelId === source.id" class="links-panel" :aria-busy="linksBusy">
+                  <div class="links-actions">
+                    <button
+                      type="button"
+                      class="subtle-button"
+                      :disabled="linksBusy"
+                      @click="suggestLinks(source)"
+                    >{{ linksBusy ? '匹配中…' : '生成关联建议' }}</button>
+                    <span class="links-hint">按语义相似度推荐视频片段配对；建议≠事实，确认后才生效。</span>
+                  </div>
+                  <p v-if="linkNotice" class="links-notice" role="status">{{ linkNotice }}</p>
+                  <p v-if="!linksBusy && links.length === 0" class="links-empty">暂无关联记录。</p>
+                  <ul v-else class="link-list">
+                    <li v-for="link in links" :key="link.id" class="link-row">
+                      <div class="link-head">
+                        <span :class="['status-chip', `link-${link.status.toLowerCase()}`]">{{ linkStatusText(link.status) }}</span>
+                        <strong :title="link.targetTitle">{{ link.targetTitle }}</strong>
+                        <span v-if="link.targetStartMs != null" class="link-time">{{ formatMs(link.targetStartMs) }} – {{ formatMs(link.targetEndMs) }}</span>
+                        <span v-if="link.confidence != null" class="link-score">{{ (link.confidence * 100).toFixed(0) }}%</span>
+                        <template v-if="link.status === 'SUGGESTED'">
+                          <button type="button" class="subtle-button" :disabled="linksBusy" @click="confirmLink(link)">确认</button>
+                          <button type="button" class="subtle-button" :disabled="linksBusy" @click="rejectLink(link)">拒绝</button>
+                        </template>
+                      </div>
+                      <p class="link-pair">
+                        <span class="link-side">稿</span>{{ link.sourceExcerpt }}
+                        <span class="link-side">视频</span>{{ link.targetExcerpt }}
+                      </p>
+                    </li>
+                  </ul>
+                </div>
               </div>
+              <button
+                v-if="source.sourceType === 'SCRIPT'"
+                type="button"
+                class="source-move"
+                @click="toggleLinksPanel(source)"
+              >关联{{ linksPanelId === source.id ? ' ▴' : '' }}</button>
               <button type="button" class="source-move" @click="openMove(source)">移动</button>
             </li>
           </ul>
@@ -255,7 +380,7 @@ import { computed, ref, watch } from 'vue'
 import { apiRequest } from './api'
 
 const props = defineProps({ user: { type: Object, default: null } })
-defineEmits(['request-login'])
+defineEmits(['request-login', 'open-evidence'])
 
 const spaces = ref([])
 const collections = ref([])
@@ -280,6 +405,9 @@ const tagFilter = ref('')
 const tagEditorId = ref(null)
 const newTagDraft = ref('')
 const searchQuery = ref('')
+const asking = ref(false)
+const answerResult = ref(null)
+const answerError = ref('')
 const searching = ref(false)
 const searched = ref(false)
 const searchResults = ref([])
@@ -288,6 +416,34 @@ const ingestPath = ref('')
 const ingestBusy = ref(false)
 const ingestPlan = ref(null)
 const ingestError = ref('')
+const scriptComposerOpen = ref(false)
+const newScriptTitle = ref('')
+const newScriptContent = ref('')
+const mcpAlive = ref(null)
+const mcpEndpoint = computed(() => `${location.protocol}//${location.hostname}:9091/mcp`)
+const mcpClientConfig = computed(() =>
+  JSON.stringify({ mcpServers: { 'dovideo-knowledge': { url: mcpEndpoint.value, headers: { Authorization: 'Bearer <令牌>' } } } }, null, 2))
+
+function probeMcpAdapter() {
+  mcpAlive.value = null
+  fetch(mcpEndpoint.value, { method: 'GET' })
+    .then(() => { mcpAlive.value = true })   // 401/405 都说明适配器在响应
+    .catch(() => { mcpAlive.value = false })
+}
+
+async function copyText(text, message) {
+  try {
+    await navigator.clipboard.writeText(text)
+    notice.value = message
+  } catch {
+    notice.value = '复制失败，请手动选择复制'
+  }
+}
+
+const linksPanelId = ref(null)
+const links = ref([])
+const linksBusy = ref(false)
+const linkNotice = ref('')
 
 const ingestActions = computed(() => {
   if (!ingestPlan.value?.plan) return []
@@ -306,7 +462,10 @@ const activeTag = computed(() => tagFilter.value.trim())
 
 watch(() => props.user?.id, async userId => {
   resetState()
-  if (userId) await loadSpaces()
+  if (userId) {
+    probeMcpAdapter()
+    await loadSpaces()
+  }
 }, { immediate: true })
 
 function resetState() {
@@ -317,6 +476,10 @@ function resetState() {
   selectedCollectionId.value = null
   error.value = ''
   notice.value = ''
+  answerResult.value = null
+  answerError.value = ''
+  searchResults.value = []
+  searched.value = false
   tagFilter.value = ''
   closeTagEditor()
   closeSpaceComposer()
@@ -372,6 +535,7 @@ async function selectSpace(spaceId) {
   if (spaceId === selectedSpaceId.value) return
   selectedSpaceId.value = spaceId
   selectedCollectionId.value = null
+  clearKnowledgeResponses()
   closeCollectionComposer()
   await refreshCurrent()
 }
@@ -379,8 +543,17 @@ async function selectSpace(spaceId) {
 async function selectCollection(collectionId) {
   if (collectionId === selectedCollectionId.value) return
   selectedCollectionId.value = collectionId
+  clearKnowledgeResponses()
   closeCollectionComposer()
   await refreshCurrent()
+}
+
+function clearKnowledgeResponses() {
+  answerResult.value = null
+  answerError.value = ''
+  searchResults.value = []
+  searchError.value = ''
+  searched.value = false
 }
 
 async function refreshCurrent() {
@@ -512,6 +685,8 @@ async function searchKnowledge() {
   if (!query || !selectedSpaceId.value) return
   searching.value = true
   searchError.value = ''
+  answerError.value = ''
+  answerResult.value = null
   try {
     const hits = await request('/knowledge/search', {
       method: 'POST',
@@ -524,6 +699,27 @@ async function searchKnowledge() {
     searchError.value = cause.message || '跨视频检索失败'
   } finally {
     searching.value = false
+  }
+}
+
+async function askKnowledge() {
+  const query = searchQuery.value.trim()
+  if (!query || !selectedSpaceId.value) return
+  asking.value = true
+  answerError.value = ''
+  searchError.value = ''
+  answerResult.value = null
+  searched.value = false
+  try {
+    answerResult.value = await request('/knowledge/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ spaceId: selectedSpaceId.value, query, topK: 8, strategy: 'hybrid' })
+    })
+  } catch (cause) {
+    answerError.value = cause.message || '知识库回答失败，请稍后重试'
+  } finally {
+    asking.value = false
   }
 }
 
@@ -561,6 +757,98 @@ async function runIngest(dryRun) {
 
 async function applyIngest() {
   await runIngest(false)
+}
+
+async function createScript() {
+  if (!newScriptContent.value.trim()) return
+  saving.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const created = await request('/knowledge/sources/script', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: newScriptTitle.value,
+        content: newScriptContent.value,
+        spaceId: selectedSpaceId.value
+      })
+    })
+    scriptComposerOpen.value = false
+    newScriptTitle.value = ''
+    newScriptContent.value = ''
+    notice.value = `脚本「${created.title}」已索引（${created.status}），现在可跨视频检索。`
+    await loadCurrentSpace()
+  } catch (cause) {
+    error.value = cause.message || '脚本上传失败'
+  } finally {
+    saving.value = false
+  }
+}
+
+async function toggleLinksPanel(source) {
+  if (linksPanelId.value === source.id) {
+    linksPanelId.value = null
+    return
+  }
+  linksPanelId.value = source.id
+  links.value = []
+  linkNotice.value = ''
+  await loadLinks(source)
+}
+
+async function loadLinks(source) {
+  linksBusy.value = true
+  try {
+    links.value = await request(`/knowledge/sources/${source.id}/links`)
+  } catch (cause) {
+    linkNotice.value = cause.message || '关联记录读取失败'
+  } finally {
+    linksBusy.value = false
+  }
+}
+
+async function suggestLinks(source) {
+  linksBusy.value = true
+  linkNotice.value = ''
+  try {
+    const created = await request(`/knowledge/sources/${source.id}/links/suggest`, { method: 'POST' })
+    linkNotice.value = created > 0
+      ? `已生成 ${created} 条建议，请逐条核对后确认。`
+      : '没有新的可建议配对（内容不相似或均已处理）。'
+    await loadLinks(source)
+  } catch (cause) {
+    linkNotice.value = cause.message || '关联建议生成失败'
+    linksBusy.value = false
+  }
+}
+
+async function confirmLink(link) {
+  linksBusy.value = true
+  try {
+    await request(`/knowledge/links/${link.id}/confirm`, { method: 'POST' })
+    link.status = 'CONFIRMED'
+  } catch (cause) {
+    linkNotice.value = cause.message || '确认失败'
+  } finally {
+    linksBusy.value = false
+  }
+}
+
+async function rejectLink(link) {
+  linksBusy.value = true
+  try {
+    await request(`/knowledge/links/${link.id}/reject`, { method: 'POST' })
+    link.status = 'REJECTED'
+  } catch (cause) {
+    linkNotice.value = cause.message || '拒绝失败'
+  } finally {
+    linksBusy.value = false
+  }
+}
+
+function linkStatusText(status) {
+  return { SUGGESTED: '建议', CONFIRMED: '已确认', REJECTED: '已拒绝' }[status] || status
 }
 
 function formatMs(value) {
@@ -660,8 +948,34 @@ function formatDate(value) {
 .root-item { margin-bottom: 4px; }
 .rail-form { display: grid; gap: 9px; margin: 0 3px 12px; padding: 11px; border: 1px solid rgba(197,249,70,.34); background: rgba(197,249,70,.035); }
 .rail-form label { display: grid; gap: 5px; color: var(--text-sub); font: .65rem/1.2 monospace; }
-.rail-form input, .move-tray select { width: 100%; border: 1px solid var(--border-tech); border-radius: 0; background: #090a0d; color: var(--text-main); padding: 8px; outline: none; }
-.rail-form input:focus, .move-tray select:focus { border-color: var(--accent-lime); }
+.rail-form input, .rail-form textarea, .move-tray select { width: 100%; border: 1px solid var(--border-tech); border-radius: 0; background: #090a0d; color: var(--text-main); padding: 8px; outline: none; }
+.rail-form input:focus, .rail-form textarea:focus, .move-tray select:focus { border-color: var(--accent-lime); }
+.rail-form textarea { resize: vertical; min-height: 96px; font: .78rem/1.5 inherit; }
+.mcp-dot { width: 8px; height: 8px; border-radius: 50%; }
+.mcp-dot.on { background: var(--accent-lime); box-shadow: 0 0 6px rgba(197,249,70,.8); }
+.mcp-dot.off { background: #ff6876; }
+.mcp-dot.unknown { background: #888; }
+.mcp-panel { display: grid; gap: 7px; }
+.mcp-hint { margin: 0; color: var(--text-sub); font: .62rem/1.5 monospace; }
+.mcp-hint code { color: var(--accent-lime); }
+.mcp-endpoint { width: 100%; text-align: left; padding: 7px 8px; border: 1px solid rgba(197,249,70,.4); background: rgba(197,249,70,.06); color: var(--accent-lime); font: .66rem/1.3 monospace; cursor: copy; }
+.mcp-config { width: 100%; text-align: left; white-space: pre-wrap; word-break: break-all; padding: 8px; border: 1px solid var(--border-tech); background: #090a0d; color: var(--text-main); font: .6rem/1.4 monospace; cursor: copy; }
+.links-panel { margin-top: 10px; padding: 10px; border: 1px solid rgba(42,45,53,.9); background: rgba(9,10,13,.6); }
+.links-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.links-hint { color: var(--text-sub); font: .65rem/1.4 monospace; }
+.links-notice { margin: 6px 0 0; color: var(--accent-lime); font: .68rem/1.4 monospace; }
+.links-empty { margin: 8px 0 0; color: var(--text-sub); font: .68rem/1.4 monospace; }
+.link-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; }
+.link-row { padding: 8px 0; border-top: 1px dashed rgba(42,45,53,.9); }
+.link-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .72rem; }
+.link-head strong { overflow: hidden; max-width: 220px; text-overflow: ellipsis; white-space: nowrap; }
+.link-time, .link-score { color: var(--text-sub); font: .65rem/1 monospace; }
+.link-score { color: var(--accent-lime); }
+.link-pair { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; color: var(--text-sub); font: .7rem/1.5 monospace; }
+.link-side { flex: none; padding: 0 5px; border: 1px solid rgba(197,249,70,.35); color: var(--accent-lime); font-size: .6rem; }
+.link-suggested { color: #f2bf6b; }
+.link-confirmed { color: var(--accent-lime); }
+.link-rejected { color: #ff7a6b; }
 .form-actions, .move-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .form-actions button, .move-actions button { padding: 5px 8px; font-size: .72rem; }
 .text-action { color: var(--accent-lime) !important; }
@@ -687,11 +1001,34 @@ function formatDate(value) {
 .tag-editor input { flex: 1; border: 1px solid var(--border-tech); border-radius: 0; background: #090a0d; color: var(--text-main); padding: 7px 9px; font: .72rem/1.2 monospace; outline: none; }
 .tag-editor input:focus { border-color: var(--accent-lime); }
 .cross-search { margin: 0 0 20px; }
-.cross-search-row { display: flex; gap: 10px; }
-.cross-search-row input { flex: 1; border: 1px solid var(--border-tech); border-radius: 0; background: #090a0d; color: var(--text-main); padding: 10px 12px; font: .8rem/1.4 'Noto Sans SC', sans-serif; outline: none; }
+.cross-search-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 9px; }
+.cross-search-row input { min-width: 0; border: 1px solid var(--border-tech); border-radius: 0; background: #090a0d; color: var(--text-main); padding: 10px 12px; font: .8rem/1.4 'Noto Sans SC', sans-serif; outline: none; }
 .cross-search-row input:focus { border-color: var(--accent-lime); }
 .cross-search .lime-button { min-height: 42px; padding: 0 18px; font-size: .8rem; }
+.evidence-only-button { min-height: 42px; padding: 0 13px; }
+.cross-search-hint { margin: 7px 0 0; color: var(--text-sub); font: .66rem/1.5 monospace; }
 .cross-search-error { margin: 8px 0 0; color: #ff6876; font: .72rem/1.5 monospace; }
+.answer-results { margin: 0 0 24px; border: 1px solid rgba(197,249,70,.35); background: rgba(197,249,70,.035); }
+.answer-results.is-insufficient { border-color: rgba(242,191,107,.45); background: rgba(242,191,107,.035); }
+.answer-results-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 13px; border-bottom: 1px solid rgba(197,249,70,.22); }
+.is-insufficient .answer-results-head { border-color: rgba(242,191,107,.24); }
+.answer-status { display: flex; align-items: center; flex-wrap: wrap; gap: 11px; color: var(--text-sub); font: .67rem/1.4 monospace; }
+.answer-status-mark { color: var(--accent-lime); letter-spacing: .06em; }
+.is-insufficient .answer-status-mark { color: #f2bf6b; }
+.answer-copy { margin: 0; padding: 16px 14px; color: var(--text-main); font-size: .91rem; line-height: 1.85; white-space: pre-wrap; }
+.answer-citation-list { list-style: none; margin: 0; padding: 0 14px 12px; display: grid; gap: 9px; }
+.answer-citation { padding: 11px 12px; border-top: 1px solid rgba(42,45,53,.9); background: rgba(5,6,8,.3); }
+.answer-citation-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--text-sub); font: .68rem/1.4 monospace; }
+.answer-citation-meta strong { min-width: 0; max-width: min(52ch, 100%); overflow-wrap: anywhere; color: var(--text-main); font: 700 .74rem/1.4 'Noto Sans SC', sans-serif; }
+.citation-index { color: var(--accent-lime); }
+.citation-time { min-height: 40px; margin-left: auto; padding: 3px 7px; border: 1px solid rgba(197,249,70,.35); background: transparent; color: var(--accent-lime); font: .68rem/1 monospace; cursor: pointer; touch-action: manipulation; }
+@media (hover:hover) { .citation-time:hover { background: rgba(197,249,70,.08); } }
+.citation-time:active { transform: scale(.96); }
+.citation-time:focus-visible { outline: 2px solid var(--accent-lime); outline-offset: 2px; }
+.citation-source-type { margin-left: auto; color: var(--text-sub); }
+.citation-claim { margin: 7px 0 0; color: var(--text-main); font-size: .76rem; line-height: 1.65; }
+.answer-citation blockquote { margin: 6px 0 0; padding-left: 10px; border-left: 1px solid rgba(197,249,70,.5); color: var(--text-sub); font-size: .74rem; line-height: 1.75; overflow-wrap: anywhere; }
+.answer-warnings { margin: 0; padding: 0 26px 13px; color: #f2bf6b; font: .68rem/1.6 monospace; }
 .search-results { margin-bottom: 24px; border: 1px solid rgba(197,249,70,.3); background: rgba(197,249,70,.035); }
 .search-results-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 13px; border-bottom: 1px solid rgba(197,249,70,.25); color: var(--accent-lime); font: .7rem/1 monospace; letter-spacing: .1em; text-transform: uppercase; }
 .search-empty { padding: 16px 13px; color: var(--text-sub); font: .78rem/1.6 monospace; }
@@ -729,6 +1066,8 @@ function formatDate(value) {
 .status-chip { color: #e0e0e0; }
 .status-pending { color: #f2bf6b; }
 .status-indexed { color: var(--accent-lime); }
+.status-ready { color: var(--accent-lime); }
+.status-failed { color: #ff7a6b; }
 .source-move { padding: 6px 10px; font: .7rem/1 monospace; }
 .move-tray { position: sticky; bottom: 0; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(130px, .7fr) minmax(150px, .8fr) auto; align-items: end; gap: 13px; margin: 0 -34px -30px; padding: 16px 34px; border-top: 1px solid rgba(197,249,70,.5); background: #111318; box-shadow: 0 -16px 30px rgba(0,0,0,.25); }
 .move-tray p, .move-tray label { display: block; margin-bottom: 4px; color: var(--text-sub); font: .65rem/1.2 monospace; }
@@ -753,8 +1092,11 @@ function formatDate(value) {
   .source-row { grid-template-columns: 36px minmax(0, 1fr); }
   .source-move { grid-column: 2; justify-self: start; margin-top: -6px; }
   .header-tools { width: 100%; }
+  .cross-search-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .cross-search-row input { grid-column: 1 / -1; }
+  .cross-search .lime-button, .evidence-only-button { min-height: 40px; }
   .tag-filter { flex: 1; }
   .tag-filter input { width: 100%; }
 }
-@media (prefers-reduced-motion: reduce) { .icon-action:active, .subtle-button:active, .source-move:active, .lime-button:active, .text-action:active { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .icon-action:active, .subtle-button:active, .source-move:active, .lime-button:active, .text-action:active, .citation-time:active { transform: none; } }
 </style>

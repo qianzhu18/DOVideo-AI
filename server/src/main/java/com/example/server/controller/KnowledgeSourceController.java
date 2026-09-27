@@ -1,6 +1,7 @@
 package com.example.server.controller;
 
 import com.example.server.common.Result;
+import com.example.server.dto.KnowledgeSegmentView;
 import com.example.server.dto.KnowledgeSourceLocationRequest;
 import com.example.server.dto.KnowledgeSourceTagsRequest;
 import com.example.server.dto.KnowledgeSourceView;
@@ -80,5 +81,18 @@ public class KnowledgeSourceController {
             @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId,
             @PathVariable Long sourceId) {
         return Result.ok(segmentIndexService.indexSource(userId, sourceId).size());
+    }
+
+    /**
+     * Read-only evidence rows of one media (ASR/OCR/summary per time window).
+     * This is the surface the MCP adapter's get_video_evidence tool consumes.
+     */
+    @GetMapping("/media/{mediaId}/segments")
+    public Result<List<KnowledgeSegmentView>> segments(
+            @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId,
+            @PathVariable Long mediaId) {
+        return Result.ok(segmentIndexService.listSegments(userId, mediaId).stream()
+                .map(KnowledgeSegmentView::from)
+                .toList());
     }
 }

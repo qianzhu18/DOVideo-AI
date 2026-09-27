@@ -17,6 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -56,6 +57,10 @@ class KnowledgeSegmentIndexServiceTest {
         ArgumentCaptor<KnowledgeSourceVersion> updates = ArgumentCaptor.forClass(KnowledgeSourceVersion.class);
         verify(versionMapper, times(2)).updateById(updates.capture());
         assertEquals(KnowledgeSegmentIndexService.STATUS_READY, updates.getAllValues().get(1).getStatus());
+        // The source row must leave PENDING once vectors are queryable, or list views
+        // keep showing a readiness badge that never clears.
+        verify(sourceService).updateIndexStatus(any(KnowledgeSource.class),
+                eq(KnowledgeSourceService.STATUS_READY));
     }
 
     @Test
@@ -85,6 +90,8 @@ class KnowledgeSegmentIndexServiceTest {
         KnowledgeSourceVersion last = recorded.getValue();
         assertEquals(KnowledgeSegmentIndexService.STATUS_FAILED, last.getStatus());
         assertTrue(last.getFailureReason() != null && !last.getFailureReason().isBlank());
+        verify(sourceService).updateIndexStatus(any(KnowledgeSource.class),
+                eq(KnowledgeSourceService.STATUS_FAILED));
         verify(vectorStore, never()).upsertKnowledge(any());
     }
 
@@ -110,6 +117,30 @@ class KnowledgeSegmentIndexServiceTest {
         // Evidence granularity is the segment, so every segment gets its own vector even
         // when the checkpoint chunk already carries a coarser chunk-level embedding.
         verify(embeddingUtils, times(2)).embed(any(String.class));
+    }
+
+    @Test
+    void listSegmentsRejectsForeignOwnerAndReturnsRowsForTheOwner() {
+        KnowledgeSourceService sourceService = mock(KnowledgeSourceService.class);
+        KnowledgeSourceVersionMapper versionMapper = mock(KnowledgeSourceVersionMapper.class);
+        KnowledgeSegmentMapper segmentMapper = mock(KnowledgeSegmentMapper.class);
+        QdrantVectorStore vectorStore = mock(QdrantVectorStore.class);
+        AgentCheckpointService checkpointService = mock(AgentCheckpointService.class);
+        VideoChunkingService chunkingService = mock(VideoChunkingService.class);
+        EmbeddingUtils embeddingUtils = mock(EmbeddingUtils.class);
+        // source(9L, 5L) 的属主是 userId=7
+        when(sourceService.requireSourceByMediaId(5L)).thenReturn(source(9L, 5L));
+        KnowledgeSegment row = new KnowledgeSegment();
+        row.setId("seg-1");
+        row.setMediaId(5L);
+        when(segmentMapper.selectList(any())).thenReturn(List.of(row));
+
+        KnowledgeSegmentIndexService service = new KnowledgeSegmentIndexService(
+                sourceService, versionMapper, segmentMapper, vectorStore, checkpointService,
+                chunkingService, embeddingUtils, mock(KnowledgeAuditService.class), "BAAI/bge-m3");
+
+        assertThrows(SecurityException.class, () -> service.listSegments(99L, 5L));
+        assertEquals(List.of(row), service.listSegments(7L, 5L));
     }
 
     private static KnowledgeSource source(Long id, Long mediaId) {

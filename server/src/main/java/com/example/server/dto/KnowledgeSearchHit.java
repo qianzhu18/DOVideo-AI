@@ -7,6 +7,7 @@ package com.example.server.dto;
 public record KnowledgeSearchHit(
         String segmentId,
         Long sourceId,
+        String sourceType,
         Long mediaId,
         String title,
         long startMs,
