@@ -73,12 +73,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://127.0.0.1:9091/mcp")
     parser.add_argument("--token", required=True)
-    parser.add_argument("--query", default="语音助手能听懂哪些动作指令")
-    parser.add_argument("--ask-query", default="语音助手能听懂哪些动作指令",
+    parser.add_argument("--query", default="Redis 为什么快")
+    parser.add_argument("--ask-query", default="MySQL 的索引为什么用 B+ 树而不是 B 树",
                         help="Question the corpus CAN answer; must yield SUPPORTED citations")
     parser.add_argument("--refusal-query", default="Kubernetes 调度器是怎么分配 Pod 的",
                         help="Out-of-corpus question; must yield INSUFFICIENT_EVIDENCE")
-    parser.add_argument("--space-id", type=int, default=None)
+    parser.add_argument("--space-id", type=int, default=None,
+                        help="Omit to auto-pick the user's main (non-system-default) space")
     args = parser.parse_args()
 
     client = McpClient(args.url, args.token)
@@ -95,6 +96,13 @@ def main():
 
     spaces = client.call_tool("list_knowledge_spaces", {})
     print(f"[3] list_knowledge_spaces ok: {[(s['id'], s['name']) for s in spaces]}")
+    if not args.space_id:
+        # The system-default space is the auto-created empty one; the user's main
+        # library is the first non-default space (personal-product convention).
+        main_space = next((s for s in spaces if not s.get("systemDefault")), None)
+        args.space_id = main_space["id"] if main_space else None
+        if args.space_id:
+            print(f"    auto-picked main space: {args.space_id} ({main_space['name']})")
     # No --space-id means "search all spaces" — the assistant-friendly default.
     search_args = {"query": args.query, "topK": 3}
     if args.space_id:

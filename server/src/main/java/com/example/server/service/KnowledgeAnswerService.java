@@ -81,7 +81,12 @@ public class KnowledgeAnswerService {
     }
 
     private static String normalize(String value) {
-        return nonNull(value).replaceAll("[\\s\\p{Punct}，。！？、；：‘’“”【】（）《》]", "");
+        // Case-folded: ASR transcripts render English in lowercase ("g c roots") while
+        // the model quotes the canonical form ("GC Roots") — same characters, and for a
+        // Chinese-dominant corpus the case distinction only creates false refusals.
+        return nonNull(value)
+                .replaceAll("[\\s\\p{Punct}，。！？、；：‘’“”【】（）《》]", "")
+                .toLowerCase(java.util.Locale.ROOT);
     }
 
     private static boolean isBlank(String value) {

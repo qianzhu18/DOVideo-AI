@@ -69,6 +69,27 @@ class KnowledgeAnswerServiceTest {
         assertTrue(answer.citations().isEmpty());
     }
 
+    @Test
+    void acceptsQuoteThatMatchesCaseFoldedAsrTranscript() {
+        // ASR renders English lowercase and space-separated ("g c roots"); the model
+        // quotes the canonical spelling ("GC Roots"). Same characters after
+        // normalization, so the citation must verify instead of triggering a refusal.
+        KnowledgeSearchService search = mock(KnowledgeSearchService.class);
+        KnowledgeAnswerGenerator generator = mock(KnowledgeAnswerGenerator.class);
+        when(search.search(anyLong(), any())).thenReturn(
+                List.of(hit("jvm-1", "当一个对象到这个 g c roots 之间没有任何引用相连，就是不可达。")));
+        when(generator.generate(eq("什么是 GC Roots"), any())).thenReturn(new KnowledgeAnswerDraft(
+                "SUPPORTED", "GC Roots 是可达性分析的起点。", List.of(
+                new KnowledgeAnswerDraft.CitationDraft("jvm-1", "GC Roots 定义",
+                        "到这个 GC Roots 之间没有任何引用相连"))));
+
+        KnowledgeAnswer answer = new KnowledgeAnswerService(search, generator).ask(
+                7L, new KnowledgeAskRequest(3L, null, "什么是 GC Roots", 8, "hybrid"));
+
+        assertEquals(KnowledgeAnswer.SUPPORTED, answer.answerability());
+        assertEquals(1, answer.citations().size());
+    }
+
     private static KnowledgeSearchHit hit(String segmentId, String transcript) {
         return new KnowledgeSearchHit(segmentId, 9L, "video", 5L, "Redis 系列 - 第 1 讲",
                 60_000L, 120_000L, 0.82, transcript, "", "", "hybrid");
