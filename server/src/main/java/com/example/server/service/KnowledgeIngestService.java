@@ -130,7 +130,12 @@ public class KnowledgeIngestService {
         MediaFile media = mediaService.saveUploadedMedia(file.getName(), fileUrl, userId, md5);
         moveIntoTarget(userId, media.getId(), request);
         sourceService.registerExternalLocation(userId, media.getId(), action.path());
-        dispatch(media);
+        if (request.analyze() == null || request.analyze()) {
+            dispatch(media);
+        } else {
+            log.info("knowledge_ingest_skip_analysis mediaId={} path={} (analyze=false)",
+                    media.getId(), action.path());
+        }
     }
 
     private void applyChanged(Long userId, KnowledgeIngestRequest request,

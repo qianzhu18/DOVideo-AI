@@ -75,6 +75,25 @@ class KnowledgeIngestServiceTest {
                 root.resolve("clip.mp4").toString());
     }
 
+    @Test
+    void applyWithAnalyzeFalseRegistersWithoutDispatchingAnalysis() throws Exception {
+        Files.writeString(root.resolve("clip.mp4"), "fake-video-bytes");
+        KnowledgeIngestService service = service(root.toString(), root);
+        MediaFile media = media(21L, "md5-x");
+        when(minioUtils(service).uploadLocalFile(any(), anyString())).thenReturn("minio://x");
+        when(mediaService(service).calculateMd5(any(java.io.File.class))).thenReturn("md5-x");
+        when(mediaService(service).saveUploadedMedia(eq("clip.mp4"), eq("minio://x"),
+                eq(7L), eq("md5-x"))).thenReturn(media);
+
+        KnowledgeIngestScan scan = service.ingest(7L,
+                new KnowledgeIngestRequest(root.toString(), 3L, null, false, false));
+
+        assertEquals(1, scan.getCreatedCount());
+        verify(dispatchService(service), never()).submit(any(), anyString(), any(), any());
+        verify(sourceService(service)).registerExternalLocation(7L, 21L,
+                root.resolve("clip.mp4").toString());
+    }
+
     // --- wiring helpers: the service builds collaborators via constructor, so the mocks
     // are captured here to keep verification concise ---
 
@@ -117,7 +136,7 @@ class KnowledgeIngestServiceTest {
     }
 
     private static KnowledgeIngestRequest request(String rootPath, boolean dryRun) {
-        return new KnowledgeIngestRequest(rootPath, 3L, null, dryRun);
+        return new KnowledgeIngestRequest(rootPath, 3L, null, dryRun, null);
     }
 
     private static MediaFile media(Long id, String hash) {
