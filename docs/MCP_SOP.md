@@ -81,6 +81,14 @@
 
 **语义约定（写给被接入的 AI）**：`INSUFFICIENT_EVIDENCE` 时必须转述拒答，不得自行编造；引用要带 mediaId 与秒级时间戳转述给用户。空账号（无任何空间）会返回确定性拒答而非报错。
 
+真实返回样例（2026-09-27，13 期 B站面试八股语料，674 段）：
+
+- `ask_video_knowledge {query: "做外卖或点评这类项目时，Redis 缓存一般怎么用？"}` → `SUPPORTED`，回答综合 Redis 概念与项目实战，**5 条引用命中两期视频**（11 苍穹外卖 + 12 黑马点评），每条带 mediaId 与秒级时间戳、逐字 quote。
+- `ask_video_knowledge {query: "JVM 有哪些常见的垃圾回收器？"}` → `SUPPORTED`，3 条引用命中 10 期 JVM 视频 1920s 处（串行/并行/CMS）。
+- `ask_video_knowledge {query: "React Hooks 的使用规则是什么？"}` → `INSUFFICIENT_EVIDENCE`，citations 为空——域外问题正确拒答。
+
+完整样例与引用原文见 `docs/acceptance/rag-samples.md`。
+
 ## 4. 一键验收
 
 ```bash
@@ -104,4 +112,4 @@ scripts/mcp_sop_check.sh --ask-query "三次握手的过程是什么"
 
 ## 6. 变更记录
 
-- 2026-09-27：新增 `ask_video_knowledge`（第 4 工具）；认证切服务账号模式；dev-up.sh 端口劫持修复；本 SOP 建立。
+- 2026-09-27：新增 `ask_video_knowledge`（第 4 工具）；认证切服务账号模式；dev-up.sh 端口劫持修复；本 SOP 建立；一键验收 `SOP CHECK PASSED`（真实 13 期语料，含跨视频引用与拒答护栏）。
