@@ -41,10 +41,9 @@ public class KnowledgeAnswerService {
         List<KnowledgeAnswerCitation> citations = validateCitations(draft, hits);
         if (draft == null || !KnowledgeAnswer.SUPPORTED.equalsIgnoreCase(trim(draft.answerability()))
                 || isBlank(draft.answer()) || citations.isEmpty()) {
-            int submitted = draft == null || draft.citations() == null ? 0 : draft.citations().size();
             return insufficient(INVALID_CITATION_MESSAGE,
                     List.of("仅返回带有服务端验证的 segmentId 和原文 quote 的回答。",
-                            "模型提交 " + submitted + " 条引用，" + citations.size() + " 条通过逐字校验。"));
+                            refusalReason(draft, citations)));
         }
         return new KnowledgeAnswer(KnowledgeAnswer.SUPPORTED, draft.answer().trim(), citations, List.of());
     }
@@ -80,6 +79,21 @@ public class KnowledgeAnswerService {
 
     private KnowledgeAnswer insufficient(String message, List<String> warnings) {
         return new KnowledgeAnswer(KnowledgeAnswer.INSUFFICIENT_EVIDENCE, message, List.of(), warnings);
+    }
+
+    /** Distinguishes the three failure modes so eval reports can attribute misses. */
+    private static String refusalReason(KnowledgeAnswerDraft draft, List<KnowledgeAnswerCitation> verified) {
+        if (draft == null) {
+            return "生成模型无有效输出。";
+        }
+        if (!KnowledgeAnswer.SUPPORTED.equalsIgnoreCase(trim(draft.answerability()))) {
+            return "模型自身判定证据不足。";
+        }
+        int submitted = draft.citations() == null ? 0 : draft.citations().size();
+        if (submitted == 0) {
+            return "模型返回 SUPPORTED 但未提供任何引用（空 citations）。";
+        }
+        return "模型提交 " + submitted + " 条引用，" + verified.size() + " 条通过逐字校验。";
     }
 
     private static String normalize(String value) {

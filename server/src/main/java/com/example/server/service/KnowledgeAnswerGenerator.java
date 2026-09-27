@@ -34,6 +34,9 @@ public class KnowledgeAnswerGenerator {
                   口语、标点——禁止纠正、补全、缩写或翻译；
                 - 选短句（10~40 字）而不是长句，越短越容易逐字命中；
                 - segmentId 必须逐字来自 Evidence。
+                绝对禁止交白卷：只要 Evidence 里有能支撑回答的内容，就必须给出至少一条引用。
+                无法逐字引用全部结论时，只给能引用的那几条，不要因此返回空 citations 或 INSUFFICIENT_EVIDENCE；
+                多个问题的复合提问可以拆开逐条回答并分别引用。
                 若证据不足、证据互相矛盾而无法判断，answerability 必须是 INSUFFICIENT_EVIDENCE，并说明缺少什么；不要编造引用。
                 若有充分证据，answerability 必须是 SUPPORTED，answer 用简洁 Markdown 中文回答，并明确哪些观点来自不同视频。
 
