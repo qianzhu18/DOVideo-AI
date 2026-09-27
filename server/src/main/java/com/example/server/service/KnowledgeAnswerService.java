@@ -41,8 +41,10 @@ public class KnowledgeAnswerService {
         List<KnowledgeAnswerCitation> citations = validateCitations(draft, hits);
         if (draft == null || !KnowledgeAnswer.SUPPORTED.equalsIgnoreCase(trim(draft.answerability()))
                 || isBlank(draft.answer()) || citations.isEmpty()) {
+            int submitted = draft == null || draft.citations() == null ? 0 : draft.citations().size();
             return insufficient(INVALID_CITATION_MESSAGE,
-                    List.of("仅返回带有服务端验证的 segmentId 和原文 quote 的回答。"));
+                    List.of("仅返回带有服务端验证的 segmentId 和原文 quote 的回答。",
+                            "模型提交 " + submitted + " 条引用，" + citations.size() + " 条通过逐字校验。"));
         }
         return new KnowledgeAnswer(KnowledgeAnswer.SUPPORTED, draft.answer().trim(), citations, List.of());
     }
