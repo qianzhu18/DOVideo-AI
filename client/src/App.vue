@@ -50,6 +50,7 @@
               id="file-input"
               @change="handleFileChange"
               accept="video/*"
+              multiple
               hidden
           />
 
@@ -121,8 +122,19 @@
               </div>
               <span v-if="uploadProgress.detail" class="busy-stat" aria-live="polite">{{ uploadProgress.detail }}</span>
               <span v-if="uploadProgress.warning" class="busy-warning" role="status">{{ uploadProgress.warning }}</span>
+              <ul v-if="uploadQueue.length > 1" class="upload-queue" aria-label="批量上传队列">
+                <li
+                    v-for="item in uploadQueue"
+                    :key="item.key"
+                    class="upload-queue-item"
+                    :class="item.status"
+                >
+                  <span class="queue-name">{{ item.name }}</span>
+                  <span class="queue-status">{{ queueStatusLabel(item) }}</span>
+                </li>
+              </ul>
               <div v-if="uploadAbort" class="busy-actions">
-                <button type="button" @click="cancelUpload">取消上传</button>
+                <button type="button" @click="cancelUpload">{{ uploadQueue.length > 1 ? '取消全部' : '取消上传' }}</button>
               </div>
             </div>
 
@@ -648,8 +660,20 @@ const resetDragState = () => {
   isDragOver.value = false
 }
 
-/** 统一入口：登录、格式、体积三道校验全部在进入上传态之前完成。 */
-const startUpload = async (selectedFile, extraFileCount = 0) => {
+// --- 批量上传：文件级串行队列，片级并发由 chunkUpload 保持不变 ---
+const MAX_BATCH_UPLOAD = 20
+const uploadQueue = ref([])
+
+const queueStatusLabel = item => ({
+  queued: '排队中',
+  uploading: '上传中',
+  done: '✓ 完成',
+  failed: item.message ? `✗ ${item.message}` : '✗ 失败',
+  skipped: `— ${item.message || '已跳过'}`
+}[item.status] || item.status)
+
+/** 统一入口：登录校验后把所选文件（单个或多个）排队；格式/体积不合格的直接标记跳过。 */
+const startUpload = async (fileList) => {
   if (uploading.value) {
     showMsg('已有上传任务在进行，请等当前任务结束', true)
     return
@@ -659,27 +683,108 @@ const startUpload = async (selectedFile, extraFileCount = 0) => {
     openAuthModal()
     return
   }
-  if (!selectedFile) return
-  if (!isSupportedVideo(selectedFile)) {
-    showMsg(`⚠️ ${selectedFile.name} 不是受支持的视频格式`, true)
-    return
+  const files = Array.from(fileList || []).filter(Boolean)
+  if (!files.length) return
+
+  const queue = files.map(f => {
+    const unsupported = !isSupportedVideo(f) ? '不是受支持的视频格式' : ''
+    const invalid = unsupported ? '' : validateVideoFile(f)
+    return {
+      key: `${f.name}:${f.size}:${f.lastModified}`,
+      file: f,
+      name: f.name,
+      size: f.size,
+      status: unsupported || invalid ? 'skipped' : 'queued',
+      message: unsupported || invalid
+    }
+  })
+  if (files.length > MAX_BATCH_UPLOAD) {
+    for (const item of queue.slice(MAX_BATCH_UPLOAD)) {
+      item.status = 'skipped'
+      item.message = `超过单批 ${MAX_BATCH_UPLOAD} 个上限`
+    }
   }
-  const invalid = validateVideoFile(selectedFile)
-  if (invalid) {
-    showMsg(`⚠️ ${invalid}`, true)
-    return
-  }
-  if (extraFileCount > 0) {
-    showMsg(`一次只处理一个视频，已选择 ${selectedFile.name}，其余 ${extraFileCount} 个已忽略`)
-  }
-  file.value = selectedFile
   videoUrl.value = ''
-  await uploadFile()
+  uploadQueue.value = queue
+  await runUploadQueue()
+}
+
+const runUploadQueue = async () => {
+  const queue = uploadQueue.value
+  uploading.value = true
+  uploadAbort.value = new AbortController()
+  let succeeded = 0
+  let failed = 0
+  let lastMedia = null
+
+  try {
+    for (const item of queue) {
+      if (item.status !== 'queued') continue
+      if (uploadAbort.value?.signal.aborted) {
+        item.status = 'failed'
+        item.message = '已取消'
+        failed += 1
+        continue
+      }
+      item.status = 'uploading'
+      file.value = item.file
+      const result = await uploadFile()
+      if (result.ok) {
+        item.status = 'done'
+        item.message = ''
+        succeeded += 1
+        lastMedia = result.media
+      } else if (result.skipped) {
+        item.status = 'failed'
+        item.message = '已跳过'
+        failed += 1
+      } else if (result.aborted) {
+        item.status = 'failed'
+        item.message = '已取消（进度已保留）'
+        failed += 1
+        // 用户主动取消 = 终止整个队列；剩余排队项标记后退出。
+        for (const rest of queue) {
+          if (rest.status === 'queued') {
+            rest.status = 'failed'
+            rest.message = '已取消'
+          }
+        }
+        break
+      } else {
+        item.status = 'failed'
+        item.message = result.error?.message || '上传失败'
+        failed += 1
+      }
+    }
+  } finally {
+    uploading.value = false
+    uploadAbort.value = null
+    file.value = null
+  }
+
+  if (queue.length === 1) {
+    const only = queue[0]
+    if (only.status === 'done') {
+      showMsg(`✅ ${only.name} 上传完成`)
+      if (lastMedia) openAgent(lastMedia)
+    } else if (only.status === 'failed' && !only.message?.includes('已取消')) {
+      showMsg(`❌ 上传失败：${only.message || '未知错误'}`, true)
+    } else if (only.status === 'failed') {
+      showMsg('上传已取消，进度已保留，可点“继续上传”接着传')
+    }
+    uploadQueue.value = []
+    return
+  }
+
+  const skipped = queue.length - succeeded - failed
+  const summary = `批量上传结束：成功 ${succeeded}，失败 ${failed}${skipped ? `，跳过 ${skipped}` : ''}`
+  showMsg(failed ? `⚠️ ${summary}（失败文件进度已保留，可重新选择后继续）` : `✅ ${summary}`, failed > 0)
+  // 多文件完成后保留结果列表供用户查看；下次发起上传时自动清空。
 }
 
 const handleFileChange = async (e) => {
   const selected = e.target.files
-  await startUpload(selected?.[0], Math.max(0, (selected?.length || 0) - 1))
+  await startUpload(selected)
   e.target.value = ''
 }
 
@@ -687,7 +792,7 @@ const handleDrop = async (e) => {
   resetDragState()
   const dropped = e.dataTransfer?.files
   if (!dropped?.length) return
-  await startUpload(dropped[0], dropped.length - 1)
+  await startUpload(dropped)
 }
 
 const buildUploadWarning = progress => {
@@ -731,12 +836,13 @@ const rememberResumableUpload = target => {
   }
 }
 
+/** 上传 file.value 单个文件；提示职责在调用方，这里只返回结构化结果。 */
 const uploadFile = async () => {
   const target = file.value
-  if (!target) return
+  if (!target) return { ok: false, skipped: true }
   if (DEMO_MODE) {
     showMsg('演示模式：已模拟完成分片上传')
-    return
+    return { ok: true, demo: true }
   }
 
   const controller = new AbortController()
@@ -755,25 +861,16 @@ const uploadFile = async () => {
 
   try {
     const uploadedMedia = await uploadVideoInChunks(target, applyUploadProgress, controller.signal)
-    if (currentUser.value?.id !== uploadUserId) return
+    if (currentUser.value?.id !== uploadUserId) return { ok: false, skipped: true }
     resumableFile.value = null
-    showMsg(`✅ ${target.name} 上传完成`)
     await fetchList({ notify: true })
-    openAgent(uploadedMedia)
+    return { ok: true, media: uploadedMedia }
   } catch (error) {
-    if (currentUser.value?.id !== uploadUserId) return
+    if (currentUser.value?.id !== uploadUserId) return { ok: false, skipped: true }
     rememberResumableUpload(target)
-    if (error?.aborted) {
-      showMsg('上传已取消，进度已保留，可点“继续上传”接着传')
-      return
-    }
+    if (error?.aborted) return { ok: false, aborted: true }
     console.error(error)
-    showMsg(
-      resumableFile.value
-        ? `❌ 上传中断：${error.message}（进度已保留，可继续上传）`
-        : `❌ 上传失败：${error.message}`,
-      true
-    )
+    return { ok: false, error }
   } finally {
     uploading.value = false
     uploadAbort.value = null
@@ -791,7 +888,21 @@ const resumeUpload = async () => {
   const target = resumableFile.value
   if (!target || uploading.value) return
   file.value = target
-  await uploadFile()
+  uploadQueue.value = []
+  const result = await uploadFile()
+  if (result.ok) {
+    showMsg(`✅ ${target.name} 上传完成`)
+    if (result.media) openAgent(result.media)
+  } else if (result.aborted) {
+    showMsg('上传已取消，进度已保留，可点“继续上传”接着传')
+  } else if (result.error) {
+    showMsg(
+      resumableFile.value
+        ? `❌ 上传中断：${result.error.message}（进度已保留，可继续上传）`
+        : `❌ 上传失败：${result.error.message}`,
+      true
+    )
+  }
 }
 
 const discardResumableUpload = () => {
@@ -1523,6 +1634,14 @@ html, body, #app {
 .upload-progress span { display: block; height: 100%; background: var(--accent-lime); transition: width 0.25s ease; }
 .busy-stat { max-width: 82%; margin-top: 10px; color: var(--text-sub); font-family: monospace; font-size: 0.78rem; text-align: center; }
 .busy-warning { max-width: 82%; margin-top: 8px; color: #ff9aa4; font-family: monospace; font-size: 0.78rem; text-align: center; }
+.upload-queue { max-width: 86%; max-height: 168px; margin: 14px 0 0; padding: 0; overflow-y: auto; list-style: none; border: 1px solid var(--border-tech); border-radius: 6px; text-align: left; }
+.upload-queue-item { display: flex; justify-content: space-between; gap: 12px; padding: 6px 12px; font-family: monospace; font-size: 0.74rem; border-bottom: 1px solid var(--border-tech); }
+.upload-queue-item:last-child { border-bottom: none; }
+.upload-queue-item .queue-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-sub); }
+.upload-queue-item .queue-status { flex-shrink: 0; color: var(--text-dim, #8b8b8b); }
+.upload-queue-item.done .queue-status { color: #7dd87d; }
+.upload-queue-item.failed .queue-status { color: #ff9aa4; }
+.upload-queue-item.uploading .queue-status { color: #c8f542; }
 .busy-actions { margin-top: 16px; }
 .busy-actions button { border: 1px solid var(--border-tech); border-radius: 4px; background: transparent; color: var(--text-sub); padding: 7px 14px; font-size: 0.8rem; cursor: pointer; transition: all 0.3s; }
 .busy-actions button:hover { border-color: #ff4757; color: #ff7c88; }
