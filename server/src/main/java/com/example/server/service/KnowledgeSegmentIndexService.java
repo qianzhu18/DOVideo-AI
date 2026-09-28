@@ -31,6 +31,7 @@ public class KnowledgeSegmentIndexService {
     public static final String STATUS_INDEXING = "INDEXING";
     public static final String STATUS_READY = "READY";
     public static final String STATUS_FAILED = "FAILED";
+    private static final int EMBEDDING_BATCH_SIZE = 32;
     /** Bumped when the segment derivation logic changes so stale rows can be located. */
     public static final String PARSER_VERSION = "ctx-segments-v1";
 
@@ -182,10 +183,20 @@ public class KnowledgeSegmentIndexService {
     private void upsertVectors(KnowledgeSource source, KnowledgeSourceVersion version, List<KnowledgeSegment> segments) {
         vectorStore.deleteSource(source.getId());
         List<QdrantVectorStore.KnowledgePoint> points = new ArrayList<>(segments.size());
-        for (KnowledgeSegment segment : segments) {
-            List<Double> vector = embeddingUtils.embed(vectorText(segment));
-            if (vector.isEmpty()) continue;
-            points.add(new QdrantVectorStore.KnowledgePoint(segment.getId(), vector, payload(source, version, segment)));
+        for (int offset = 0; offset < segments.size(); offset += EMBEDDING_BATCH_SIZE) {
+            List<KnowledgeSegment> batch = segments.subList(offset,
+                    Math.min(offset + EMBEDDING_BATCH_SIZE, segments.size()));
+            List<List<Double>> vectors = embeddingUtils.embedBatch(batch.stream().map(this::vectorText).toList());
+            if (vectors.size() != batch.size()) {
+                throw new IllegalStateException("Embedding 返回数量与知识分段数量不一致");
+            }
+            for (int i = 0; i < batch.size(); i++) {
+                List<Double> vector = vectors.get(i);
+                if (vector.isEmpty()) continue;
+                KnowledgeSegment segment = batch.get(i);
+                points.add(new QdrantVectorStore.KnowledgePoint(
+                        segment.getId(), vector, payload(source, version, segment)));
+            }
         }
         vectorStore.upsertKnowledge(points);
     }

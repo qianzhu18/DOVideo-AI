@@ -17,6 +17,7 @@ import org.springframework.stereotype.Service;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -26,6 +27,9 @@ public class QdrantVectorStore {
 
     private static final Logger log = LoggerFactory.getLogger(QdrantVectorStore.class);
     private static final MediaType JSON_MEDIA_TYPE = MediaType.parse("application/json; charset=utf-8");
+    private static final Map<String, String> FILTER_INDEXES = Map.of(
+            "userId", "integer", "spaceId", "integer", "collectionId", "integer",
+            "sourceId", "integer", "mediaId", "integer");
 
     private final boolean enabled;
     private final String baseUrl;
@@ -283,6 +287,9 @@ public class QdrantVectorStore {
             Request.Builder lookup = request(baseUrl + "/collections/" + collection).get();
             try (Response response = client.newCall(lookup.build()).execute()) {
                 if (response.isSuccessful()) {
+                    String responseBody = response.body() == null ? "{}" : response.body().string();
+                    JSONObject collectionInfo = JSON.parseObject(responseBody).getJSONObject("result");
+                    ensureFilterIndexes(collectionInfo);
                     collectionReady.set(true);
                     return;
                 }
@@ -300,7 +307,21 @@ public class QdrantVectorStore {
             body.put("vectors", vectors);
             execute(request(baseUrl + "/collections/" + collection)
                     .put(RequestBody.create(body.toString(), JSON_MEDIA_TYPE)));
+            ensureFilterIndexes(new JSONObject());
             collectionReady.set(true);
+        }
+    }
+
+    /** Add indexes for fields used by ownership and media filters before the next bulk ingest. */
+    private void ensureFilterIndexes(JSONObject collectionInfo) {
+        JSONObject schemas = collectionInfo == null ? null : collectionInfo.getJSONObject("payload_schema");
+        for (Map.Entry<String, String> index : FILTER_INDEXES.entrySet()) {
+            if (schemas != null && schemas.containsKey(index.getKey())) continue;
+            JSONObject body = new JSONObject();
+            body.put("field_name", index.getKey());
+            body.put("field_schema", index.getValue());
+            execute(request(baseUrl + "/collections/" + collection + "/index?wait=true")
+                    .put(RequestBody.create(body.toString(), JSON_MEDIA_TYPE)));
         }
     }
 

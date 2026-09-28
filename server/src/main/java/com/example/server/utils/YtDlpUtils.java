@@ -84,7 +84,7 @@ public class YtDlpUtils {
         }
     }
 
-    private void validatePublicHttpUrl(String value) throws Exception {
+    public void validatePublicHttpUrl(String value) throws Exception {
         URI uri = URI.create(value);
         String scheme = uri.getScheme();
         String host = uri.getHost();

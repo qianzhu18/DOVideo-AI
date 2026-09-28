@@ -16,6 +16,7 @@
 - **三策略召回 + RRF 融合** — vector / keyword / hybrid 三路检索，30 条 golden 集实测 hybrid Recall@5 **0.833**、MRR **0.75**，全面优于单通道。
 - **证据约束回答** — 相关性低于阈值（0.45）时诚实拒答；回答中的引用必须能对齐到真实证据片段。
 - **本地目录增量同步** — contentHash 差分（CREATED/CHANGED/MOVED/DELETED/UNCHANGED），只重建受影响来源，不重复烧 ASR/OCR。
+- **Muku 批量导入** — 每行一条 B 站、YouTube 等视频链接，选择目标知识空间、下载并发和自定义解析目标；Muku 只负责获取视频，Java 服务继续完成转写、画面识别、RocketMQ 分析任务与 Qdrant 知识索引。批次状态和 Muku checkpoint 保存在 `MUKU_WORK_DIR`，可用原批次 ID 续跑。
 - **视频 ↔ 脚本关联** — 脚本按段落切分入同一检索空间，语义配对建议经人工确认后成事实。
 
 ### 🎬 可靠的视频任务链路
@@ -61,6 +62,8 @@
 4. （可选）给 AI 助手配置 MCP：`http://127.0.0.1:9091/mcp` + Bearer 令牌。
 
 环境要求：JDK 21、Node 22、Docker Compose、FFmpeg、Tesseract（chi_sim + eng）。配置见 `.env.example`。
+
+批量链接导入还要求在运行 Java 服务的同一环境中安装 Muku CLI，并在 `.env` 中设置 `MUKU_PATH`；`MUKU_WORK_DIR` 应指向持久化目录，以保留批次状态和下载断点。
 
 ## 验收与路线
 

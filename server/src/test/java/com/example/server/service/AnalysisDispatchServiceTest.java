@@ -90,14 +90,49 @@ class AnalysisDispatchServiceTest {
 
     @Test
     void duplicateInFlightSubmissionIsRejectedWithoutSideEffects() {
+        // 台账确认任务真的在跑(QUEUED/PROCESSING):重复提交拒绝,且绝不能清掉
+        // 活跃标记——清了会让并发提交双份入队。
         when(valueOps.setIfAbsent(anyString(), anyString(), eq(Duration.ofHours(6))))
                 .thenReturn(false);
+        when(taskLedger.hasActiveTask(MEDIA_ID)).thenReturn(true);
+
+        assertEquals(AnalysisDispatchService.SubmissionResult.DUPLICATE,
+                service.submit(mediaFile, GOAL, null, AnalysisMode.GENERAL));
+
+        verify(taskLedger).hasActiveTask(MEDIA_ID);
+        verify(redisTemplate, never()).delete(anyString());
+        verify(rocketMQTemplate, never()).convertAndSend(anyString(), any(Object.class));
+    }
+
+    @Test
+    void staleActiveMarkerIsClearedWhenLedgerShowsNoTaskInFlight() {
+        // 进程死亡会把 active 标记残留最多 6 小时(且键按内容哈希共享,一个用户的
+        // 残留会挡住另一用户同内容视频的投递)。台账没有在跑记录时,标记就是幽灵:
+        // 清掉并照常受理,而不是把内容锁死。
+        when(valueOps.setIfAbsent(anyString(), anyString(), eq(Duration.ofHours(6))))
+                .thenReturn(false, true);
+        when(taskLedger.hasActiveTask(MEDIA_ID)).thenReturn(false);
+        when(redisTemplate.delete(activeKey)).thenReturn(true);
+
+        assertEquals(AnalysisDispatchService.SubmissionResult.ACCEPTED,
+                service.submit(mediaFile, GOAL, null, AnalysisMode.GENERAL));
+
+        verify(redisTemplate).delete(activeKey);
+        verify(rocketMQTemplate).convertAndSend(eq("video-analysis-topic"), any(Object.class));
+        verify(taskLedger).onSubmitted(MEDIA_ID, USER_ID, HASH, GOAL, AnalysisMode.GENERAL);
+    }
+
+    @Test
+    void duplicateStandsWhenStaleMarkerCannotBeCleared() {
+        when(valueOps.setIfAbsent(anyString(), anyString(), eq(Duration.ofHours(6))))
+                .thenReturn(false);
+        when(taskLedger.hasActiveTask(MEDIA_ID)).thenReturn(false);
+        when(redisTemplate.delete(activeKey)).thenReturn(false);
 
         assertEquals(AnalysisDispatchService.SubmissionResult.DUPLICATE,
                 service.submit(mediaFile, GOAL, null, AnalysisMode.GENERAL));
 
         verify(rocketMQTemplate, never()).convertAndSend(anyString(), any(Object.class));
-        verifyNoInteractions(taskLedger);
     }
 
     @Test

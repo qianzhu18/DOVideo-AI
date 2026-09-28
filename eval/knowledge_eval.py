@@ -278,7 +278,7 @@ def main():
             "goldenMd5": hashlib.md5(golden_text.encode()).hexdigest(),
             "spaceId": space_id,
             "caseCount": len(cases),
-            "llmModel": os.environ.get("LLM_MODEL", "deepseek-ai/DeepSeek-V3.2"),
+            "llmModel": os.environ.get("LLM_MODEL", "Qwen/Qwen3.8-27B"),
             "embeddingModel": os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3"),
             "mode": args.mode,
             "strategies": args.strategies,

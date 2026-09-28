@@ -13,6 +13,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -134,6 +136,29 @@ public class AnalysisTaskService {
         return rows.stream()
                 .map(row -> AnalysisTaskView.from(row, filenames.get(row.getMediaId())))
                 .toList();
+    }
+
+    /** Latest ledger row per media id — lets the catch-up sweep tell never-dispatched
+     *  sources apart from failed ones (which recover through reindex, not re-dispatch). */
+    public Map<Long, AnalysisTask> latestByMediaIds(Collection<Long> mediaIds) {
+        if (mediaIds == null || mediaIds.isEmpty()) return Map.of();
+        List<AnalysisTask> rows = taskMapper.selectList(new QueryWrapper<AnalysisTask>()
+                .in("media_id", mediaIds)
+                .orderByAsc("id"));
+        Map<Long, AnalysisTask> latest = new LinkedHashMap<>();
+        for (AnalysisTask row : rows) {
+            latest.put(row.getMediaId(), row);
+        }
+        return latest;
+    }
+
+    /** Whether the media currently has a ledger row in QUEUED/PROCESSING — the
+     *  reconcilable authority for "is this task actually in flight", unlike the
+     *  best-effort Redis active marker which a killed process can leave behind. */
+    public boolean hasActiveTask(Long mediaId) {
+        if (mediaId == null) return false;
+        AnalysisTask row = latestByMediaIds(List.of(mediaId)).get(mediaId);
+        return row != null && ("QUEUED".equals(row.getState()) || "PROCESSING".equals(row.getState()));
     }
 
     private void apply(Long mediaId,

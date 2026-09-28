@@ -6,9 +6,8 @@
     <header class="navbar">
       <div class="nav-content">
         <div class="brand">
-          <span class="brand-do">DO</span>
-          <span class="brand-video">Video</span>
-          <span class="beta-badge">PRO</span>
+          <span class="brand-video"><strong>Video</strong><span class="brand-kb">KB</span></span>
+          <span class="beta-badge">视频知识库</span>
         </div>
 
         <nav class="product-switcher" aria-label="产品视图">
@@ -41,8 +40,8 @@
 
     <main v-show="activeView === 'workspace'" class="main-container">
       <section class="hero-section">
-        <h1 class="slogan-main">DECODE YOUR VIDEO</h1>
-        <p class="slogan-sub">影视重构 · 算力赋能</p>
+        <h1 class="slogan-main">VIDEO KNOWLEDGE BASE</h1>
+        <p class="slogan-sub">把视频变成可检索、可追问、有时间证据的知识</p>
 
         <div class="upload-wrapper">
           <input
@@ -56,7 +55,7 @@
 
           <div
               class="upload-magnet"
-              :class="{ 'processing': uploading, 'is-dragover': isDragOver }"
+              :class="{ 'processing': uploading, 'is-dragover': isDragOver, 'batch-mode': linkMode === 'batch' }"
               @dragenter.prevent="handleDragEnter"
               @dragover.prevent="isDragOver = true"
               @dragleave.prevent="handleDragLeave"
@@ -147,6 +146,7 @@
             <button type="button" @click="discardResumableUpload">重新开始</button>
           </div>
         </div>
+        <MukuBatchPanel :user="currentUser" @imported="fetchList({ notify: true })" />
         <transition name="toast-pop">
           <div
               v-if="message"
@@ -529,6 +529,7 @@ import { DEMO_ITEM } from './demoData'
 import { createTaskStreams } from './taskEvents'
 import { useAnalysisWorkspace } from './useAnalysisWorkspace'
 import KnowledgeLibrary from './KnowledgeLibrary.vue'
+import MukuBatchPanel from './MukuBatchPanel.vue'
 
 // --- 变量定义 ---
 const DEMO_MODE = new URLSearchParams(window.location.search).has('demo')
@@ -1541,8 +1542,9 @@ html, body, #app {
 .navbar { position: sticky; top: 0; z-index: 100; width: 100%; padding: 1.2rem 0; background: rgba(11, 12, 16, 0.85); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border-tech); }
 .nav-content { max-width: 1400px; margin: 0 auto; padding: 0 2rem; display: flex; justify-content: space-between; align-items: center; }
 .brand { display: flex; align-items: baseline; gap: 2px; }
-.brand-do { font-family: 'Dela Gothic One', sans-serif; font-size: 1.8rem; color: var(--text-main); letter-spacing: -1px; }
-.brand-video { font-family: 'Space Grotesk', sans-serif; font-size: 1.8rem; font-weight: 300; }
+.brand-video { font-family: 'Space Grotesk', sans-serif; font-size: 1.8rem; font-weight: 350; letter-spacing: -.06em; }
+.brand-video strong { font-weight: 800; }
+.brand-kb { color: var(--accent-lime); font-weight: 800; }
 .beta-badge { font-size: 0.7rem; font-weight: 700; background: var(--accent-lime); color: var(--text-inverse); padding: 2px 6px; border-radius: 2px; margin-left: 8px; transform: translateY(-4px); box-shadow: 0 0 5px var(--accent-lime); }
 .product-switcher { display: flex; align-self: stretch; align-items: stretch; margin-left: auto; margin-right: 26px; }
 .product-switcher button { position: relative; min-height: 40px; padding: 0 13px; border: 0; background: transparent; color: var(--text-sub); cursor: pointer; font: 700 .76rem/1 'Noto Sans SC', monospace; }
@@ -1862,7 +1864,7 @@ html, body, #app {
 @media (max-width: 720px) {
   .navbar { padding: 0.8rem 0; }
   .nav-content { padding: 0 1rem; }
-  .brand-do, .brand-video { font-size: 1.25rem; }
+  .brand-video { font-size: 1.25rem; }
   .product-switcher { order: 3; width: 100%; margin: 7px 0 -4px; }
   .nav-content { flex-wrap: wrap; }
   .product-switcher button { padding: 0 10px; }

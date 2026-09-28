@@ -32,6 +32,13 @@ public class ThreadPoolConfig {
         return executor("LLM-Thread-", 4, 8, 20);
     }
 
+    @Bean("knowledgeAnswerExecutor")
+    public ThreadPoolTaskExecutor knowledgeAnswerExecutor() {
+        // Streaming requests wait for model completion while forwarding chunks to the client;
+        // keep those waits from occupying the general video-analysis worker pool.
+        return executor("KnowledgeAnswer-", 2, 4, 20);
+    }
+
     private ThreadPoolTaskExecutor executor(String prefix, int coreSize, int maxSize, int queueCapacity) {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setCorePoolSize(coreSize);

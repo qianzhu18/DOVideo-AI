@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * Cross-video RAG answer boundary. The model receives only retrieved evidence; its output is
@@ -38,6 +39,24 @@ public class KnowledgeAnswerService {
         }
 
         KnowledgeAnswerDraft draft = answerGenerator.generate(request.query().trim(), hits);
+        return validateDraft(draft, hits);
+    }
+
+    public KnowledgeAnswer askStreaming(Long userId, KnowledgeAskRequest request,
+                                        Consumer<String> phase, Consumer<String> answerDelta) {
+        phase.accept("retrieving");
+        List<KnowledgeSearchHit> hits = searchService.search(userId, request.toSearchRequest());
+        if (hits.isEmpty()) {
+            phase.accept("verifying");
+            return insufficient(NO_EVIDENCE_MESSAGE, List.of("未检索到候选证据，未调用生成模型。"));
+        }
+        phase.accept("generating");
+        KnowledgeAnswerDraft draft = answerGenerator.generateStreaming(request.query().trim(), hits, answerDelta);
+        phase.accept("verifying");
+        return validateDraft(draft, hits);
+    }
+
+    private KnowledgeAnswer validateDraft(KnowledgeAnswerDraft draft, List<KnowledgeSearchHit> hits) {
         List<KnowledgeAnswerCitation> citations = validateCitations(draft, hits);
         if (draft == null || !KnowledgeAnswer.SUPPORTED.equalsIgnoreCase(trim(draft.answerability()))
                 || isBlank(draft.answer()) || citations.isEmpty()) {

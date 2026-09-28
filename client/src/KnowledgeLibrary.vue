@@ -200,7 +200,7 @@
             <div class="parse-progress-head">
               <strong>{{ parseProgress.label }}</strong>
               <span>{{ parseProgress.readyCount }}/{{ parseProgress.total }} 已入库</span>
-              <span class="parse-eta">{{ parseProgress.etaText }}</span>
+              <span v-if="parseProgress.etaText" class="parse-eta">{{ parseProgress.etaText }}</span>
             </div>
             <div class="parse-progress-bar" aria-hidden="true">
               <span :style="{ width: `${Math.round((parseProgress.readyCount / Math.max(1, parseProgress.total)) * 100)}%` }"></span>
@@ -217,13 +217,13 @@
                 <button v-if="activeTag" type="button" class="tag-clear" aria-label="清除标签筛选" @click="clearTagFilter">×</button>
               </form>
               <button
-                v-if="pendingCount > 0"
+                v-if="noJobCount > 0"
                 type="button"
                 class="subtle-button analyze-pending-button"
                 :disabled="dispatchingPending"
-                :title="'对空间里所有还没解析的视频启动转写与索引（ASR 免费计费项仅 LLM 摘要）'"
+                :title="'只补投从未开始解析的视频；失败过的视频请用卡片上的「重新解析」从存档直接补索引'"
                 @click="analyzePending"
-              >{{ dispatchingPending ? '派发中…' : `解析未入库视频（${pendingCount}）` }}</button>
+              >{{ dispatchingPending ? '派发中…' : `解析未入库视频（${noJobCount}）` }}</button>
               <button type="button" class="subtle-button" :disabled="loading" @click="refreshCurrent">刷新</button>
             </div>
           </header>
@@ -237,7 +237,7 @@
                 aria-label="向知识空间提问"
               />
               <button type="submit" class="lime-button" :disabled="asking || searching || !searchQuery.trim()">
-                {{ asking ? '整理证据中…' : '提问' }}
+                {{ asking ? answerPhaseLabel : '提问' }}
               </button>
               <button type="button" class="subtle-button evidence-only-button" :disabled="asking || searching || !searchQuery.trim()" @click="searchKnowledge">
                 {{ searching ? '检索中…' : '仅搜证据' }}
@@ -246,6 +246,16 @@
             <p class="cross-search-hint">回答会附原文引用；点击视频时间可打开原片回看。</p>
             <p v-if="answerError || searchError" class="cross-search-error" role="alert">{{ answerError || searchError }}</p>
           </form>
+
+          <section v-if="asking && answerDraft" class="answer-results answer-results-draft" aria-live="polite">
+            <header class="answer-results-head">
+              <div class="answer-status">
+                <span class="answer-status-mark">实时草稿</span>
+                <span>{{ answerPhaseLabel }} · 引用核验完成后才会作为正式答案显示</span>
+              </div>
+            </header>
+            <p class="answer-copy">{{ answerDraft }}<span class="streaming-caret" aria-hidden="true">▍</span></p>
+          </section>
 
           <section v-if="answerResult" class="answer-results" :class="{ 'is-insufficient': answerResult.answerability !== 'SUPPORTED' }" aria-live="polite">
             <header class="answer-results-head">
@@ -388,6 +398,13 @@
                 class="source-move"
                 @click="toggleLinksPanel(source)"
               >关联{{ linksPanelId === source.id ? ' ▴' : '' }}</button>
+              <button
+                v-if="ingestStateOf(source) === 'FAILED'"
+                type="button"
+                class="source-move"
+                :disabled="recoveringId === source.id"
+                @click="reindexSource(source)"
+              >{{ recoveringId === source.id ? '恢复中…' : '重新解析' }}</button>
               <button type="button" class="source-move" @click="openMove(source)">移动</button>
             </li>
           </ul>
@@ -435,39 +452,65 @@ const loading = ref(false)
 const saving = ref(false)
 const dispatchingPending = ref(false)
 const pendingCount = computed(() => sources.value.filter(source => source.status === 'PENDING').length)
-// 解析进度可视化：PENDING 源存在时轮询任务台账，把"排队/转写/索引"实时映射到卡片。
+// 解析进度可视化：PENDING 源存在时轮询任务台账，把"未投递/排队/解析中/失败"如实映射到卡片。
 const taskStates = ref({})
+// 每个源的真实入库状态：以台账为准——没有台账记录=从未投递，失败必须带原因示人，
+// 不允许把"没投递"和"失败"伪装成"排队"。
+const ingestStateOf = source => {
+  if (source.status === 'READY' || source.status === 'FAILED') return source.status
+  if (source.status && source.status !== 'PENDING') return source.status
+  const task = taskStates.value[source.mediaId]
+  if (!task) return 'NO_JOB'
+  if (task.state === 'FAILED') return 'FAILED'
+  if (task.state === 'PROCESSING') return 'PARSING'
+  if (task.state === 'QUEUED') return 'QUEUED'
+  return 'NO_JOB'
+}
+const noJobCount = computed(() => sources.value.filter(s => ingestStateOf(s) === 'NO_JOB').length)
 const parseProgress = computed(() => {
   const total = sources.value.length
-  const readyCount = sources.value.filter(s => s.status !== 'PENDING').length
-  const parsing = sources.value.filter(s => {
-    const task = taskStates.value[s.mediaId]
-    return s.status === 'PENDING' && task?.state === 'PROCESSING'
-  }).length
-  const queued = Math.max(0, pendingCount.value - parsing)
-  const active = pendingCount.value > 0
-  // 经验值：单期 30-50 分钟视频全程解析约 3-6 分钟；并发 4。给个粗但诚实的区间。
-  const etaMinutes = Math.max(1, Math.ceil((pendingCount.value * 5) / 4))
+  const readyCount = sources.value.filter(s => s.status === 'READY').length
+  const counting = state => sources.value.filter(s => ingestStateOf(s) === state).length
+  const parsing = counting('PARSING')
+  const queued = counting('QUEUED')
+  const noJob = counting('NO_JOB')
+  const failed = counting('FAILED')
+  const parts = []
+  if (parsing) parts.push(`解析中 ${parsing}`)
+  if (queued) parts.push(`排队 ${queued}`)
+  if (noJob) parts.push(`未投递 ${noJob}`)
+  if (failed) parts.push(`失败 ${failed}`)
   return {
-    active,
+    active: parts.length > 0,
     total,
     readyCount,
     parsing,
     queued,
-    label: queued > 0 ? `解析中 ${parsing} · 排队 ${queued}` : `解析中 ${parsing}`,
-    etaText: active ? `预计还需约 ${etaMinutes}–${etaMinutes * 2} 分钟` : '',
+    noJob,
+    failed,
+    label: parts.join(' · '),
+    // 不提供固定公式的 ETA：解析时长取决于视频长度与模型吞吐，编一个数字就是撒谎。
+    etaText: '',
   }
 })
 const liveStatus = source => {
-  const task = taskStates.value[source.mediaId]
-  if (source.status !== 'PENDING' || !task) return null
-  if (task.state === 'PROCESSING') return 'ANALYZING'
-  if (task.state === 'QUEUED') return 'QUEUED'
-  return null
+  const state = ingestStateOf(source)
+  if (state === 'PENDING') return null
+  return state === 'PARSING' ? 'ANALYZING' : state
 }
 const liveStage = source => {
+  if (source.status === 'FAILED') return '索引失败，可重新解析'
+  if (source.status !== 'PENDING') return null
+  const state = ingestStateOf(source)
+  if (state === 'NO_JOB') return '尚未投递解析任务'
   const task = taskStates.value[source.mediaId]
-  if (!task || source.status !== 'PENDING') return null
+  if (!task) return null
+  if (task.state === 'FAILED') {
+    return task.errorType === 'BudgetExceeded'
+      ? '解析失败：报告预算耗尽（转写已保留，重新解析可直接补索引）'
+      : `解析失败：${task.errorType || '未知原因'}`
+  }
+  if (task.state === 'QUEUED') return '排队等待解析'
   const stageText = {
     VIDEO_CONTEXT: '转写+画面识别中',
     CHUNK_SUMMARY: '分块摘要中',
@@ -475,12 +518,13 @@ const liveStage = source => {
     AGENT_LOOP: '生成分析报告中',
     EXECUTOR: '生成分析报告中',
   }[task.latestStage]
-  if (task.state === 'QUEUED') return '排队等待解析'
   return stageText || null
 }
 let progressTimer = null
+let sawRunningTask = false
 const stopProgressPolling = () => {
   if (progressTimer) { clearInterval(progressTimer); progressTimer = null }
+  sawRunningTask = false
 }
 const startProgressPolling = () => {
   if (progressTimer) return
@@ -495,24 +539,20 @@ const startProgressPolling = () => {
       const mediaIds = new Set(freshSources.map(s => s.mediaId))
       taskStates.value = Object.fromEntries(
         (tasks || []).filter(t => mediaIds.has(t.mediaId)).map(t => [t.mediaId, t]))
-      const stillPending = freshSources.some(s => s.status === 'PENDING')
-      if (!stillPending) {
+      const running = Object.values(taskStates.value)
+        .some(t => t.state === 'QUEUED' || t.state === 'PROCESSING')
+      // 批次结束的判定是"台账里没有在跑的任务"，而不是"没有 PENDING 源"——
+      // 失败源的 source.status 停留在 PENDING，旧判定会让失败提醒永远不触发。
+      if (running) {
+        sawRunningTask = true
+      } else if (sawRunningTask) {
         stopProgressPolling()
-        const failedSources = freshSources.filter(s => s.status === 'FAILED')
-        // 预算超限等失败里，转写其实已落存档：reindex 从 checkpoint 直接补索引，
-        // 不重烧 ASR。逐个尽力恢复，恢复不了的才需要人工。
-        let recovered = 0
-        for (const failedSource of failedSources) {
-          try {
-            await request(`/knowledge/sources/${failedSource.id}/reindex`, { method: 'POST' })
-            recovered += 1
-          } catch { /* 该源无存档时保持 FAILED，卡片上可手动重试 */ }
-        }
-        if (recovered) await refreshCurrent()
-        const stillFailed = failedSources.length - recovered
-        notice.value = stillFailed > 0
-          ? `解析批次结束：${freshSources.length - failedSources.length} 个成功，${stillFailed} 个未能自动恢复（可点卡片 Video Agent 重试）`
-          : '全部视频解析完成，现在可以直接向这个知识空间提问了'
+        const failedSources = freshSources.filter(s => ingestStateOf(s) === 'FAILED')
+        const unresolved = await autoRecoverFailed(failedSources)
+        const readyNow = freshSources.filter(s => s.status === 'READY').length
+        notice.value = unresolved > 0
+          ? `解析批次结束：${readyNow} 个已入库，${unresolved} 个未能自动恢复（卡片上可重新解析）`
+          : `解析批次结束：${readyNow}/${freshSources.length} 已入库，现在可以直接向这个知识空间提问了`
       }
     } catch {
       // 轮询失败静默：下一次 tick 会重试，不打断用户。
@@ -520,7 +560,10 @@ const startProgressPolling = () => {
   }, 8000)
 }
 watch(pendingCount, count => { if (count > 0) startProgressPolling() }, { immediate: true })
-onUnmounted(stopProgressPolling)
+onUnmounted(() => {
+  stopProgressPolling()
+  activeAskController?.abort()
+})
 const error = ref('')
 const notice = ref('')
 const spaceComposerOpen = ref(false)
@@ -542,7 +585,16 @@ const newTagDraft = ref('')
 const searchQuery = ref('')
 const asking = ref(false)
 const answerResult = ref(null)
+const answerDraft = ref('')
+const answerPhase = ref('retrieving')
 const answerError = ref('')
+let answerRequestId = 0
+let activeAskController = null
+const answerPhaseLabel = computed(() => ({
+  retrieving: '检索证据中…',
+  generating: '正在生成答案…',
+  verifying: '正在核验引用…'
+})[answerPhase.value] || '正在处理…')
 const searching = ref(false)
 const searched = ref(false)
 const searchResults = ref([])
@@ -604,6 +656,10 @@ watch(() => props.user?.id, async userId => {
 }, { immediate: true })
 
 function resetState() {
+  answerRequestId += 1
+  activeAskController?.abort()
+  activeAskController = null
+  asking.value = false
   spaces.value = []
   collections.value = []
   sources.value = []
@@ -612,6 +668,8 @@ function resetState() {
   error.value = ''
   notice.value = ''
   answerResult.value = null
+  answerDraft.value = ''
+  answerPhase.value = 'retrieving'
   answerError.value = ''
   searchResults.value = []
   searched.value = false
@@ -664,6 +722,7 @@ async function loadCurrentSpace() {
   if (spaceId !== selectedSpaceId.value || collectionId !== selectedCollectionId.value) return
   collections.value = loadedCollections
   sources.value = loadedSources
+  autoCatchUp()
 }
 
 async function selectSpace(spaceId) {
@@ -684,7 +743,13 @@ async function selectCollection(collectionId) {
 }
 
 function clearKnowledgeResponses() {
+  answerRequestId += 1
+  activeAskController?.abort()
+  activeAskController = null
+  asking.value = false
   answerResult.value = null
+  answerDraft.value = ''
+  answerPhase.value = 'retrieving'
   answerError.value = ''
   searchResults.value = []
   searchError.value = ''
@@ -721,6 +786,66 @@ async function analyzePending() {
     error.value = cause.message || '批量解析派发失败'
   } finally {
     dispatchingPending.value = false
+  }
+}
+
+async function syncTaskStates() {
+  const tasks = await request('/analysis/tasks')
+  const mediaIds = new Set(sources.value.map(s => s.mediaId))
+  taskStates.value = Object.fromEntries(
+    (tasks || []).filter(t => mediaIds.has(t.mediaId)).map(t => [t.mediaId, t]))
+}
+
+// 打开空间页自动兜底：从未投递的源幂等补投递，失败过的源从存档补索引。
+// 用户不需要记得"先点一下按钮"——没开始和失败都必须自己浮出来、自己恢复。
+// 每次进入空间都对账一次：限流拒绝、进程重启、页面早于服务就绪等任何原因
+// 漏掉的投递，下次进来都会自愈，而不是一次失败就永远沉默（服务端幂等：
+// 只补"无台账记录"的源，重复触发无害）。
+async function autoCatchUp() {
+  const spaceId = selectedSpaceId.value
+  if (!spaceId) return
+  try {
+    await syncTaskStates()
+    const noJob = sources.value.filter(s => ingestStateOf(s) === 'NO_JOB').length
+    if (noJob > 0) {
+      const result = await request(`/knowledge/spaces/${spaceId}/analyze-pending`, { method: 'POST' })
+      if (result?.dispatched > 0) {
+        notice.value = `检测到 ${result.dispatched} 个视频从未开始解析，已自动派发进入解析队列`
+        startProgressPolling()
+      }
+    }
+    const failedSources = sources.value.filter(s => ingestStateOf(s) === 'FAILED')
+    if (failedSources.length > 0) await autoRecoverFailed(failedSources)
+  } catch {
+    // 自动兜底失败不打断浏览：汇总条会如实显示未投递/失败，下次进来再自愈。
+  }
+}
+
+async function autoRecoverFailed(failedSources) {
+  let recovered = 0
+  for (const failedSource of failedSources) {
+    try {
+      await request(`/knowledge/sources/${failedSource.id}/reindex`, { method: 'POST' })
+      recovered += 1
+    } catch { /* 无存档可恢复时保持失败，卡片上可手动重新解析 */ }
+  }
+  if (recovered > 0) await refreshCurrent()
+  return failedSources.length - recovered
+}
+
+const recoveringId = ref(null)
+async function reindexSource(source) {
+  if (recoveringId.value) return
+  recoveringId.value = source.id
+  error.value = ''
+  try {
+    await request(`/knowledge/sources/${source.id}/reindex`, { method: 'POST' })
+    notice.value = `“${source.title}”已从保留的转写存档直接补索引（未重烧转写）`
+    await refreshCurrent()
+  } catch (cause) {
+    error.value = cause.message || '补索引失败：该视频可能没有可用存档，可用卡片的 Video Agent 重新完整解析'
+  } finally {
+    recoveringId.value = null
   }
 }
 
@@ -908,20 +1033,65 @@ async function askKnowledge() {
   const query = searchQuery.value.trim()
   if (!query || !selectedSpaceId.value) return
   asking.value = true
+  const requestId = ++answerRequestId
+  const controller = new AbortController()
+  activeAskController = controller
   answerError.value = ''
   searchError.value = ''
   answerResult.value = null
+  answerDraft.value = ''
+  answerPhase.value = 'retrieving'
   searched.value = false
   try {
-    answerResult.value = await request('/knowledge/ask', {
+    const response = await apiRequest('/knowledge/ask/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
       body: JSON.stringify({ spaceId: selectedSpaceId.value, query, topK: 8, strategy: 'hybrid' })
     })
+    if (!response.ok) throw new Error((await response.text()) || '知识库回答失败，请稍后重试')
+    if (!response.body) throw new Error('当前浏览器不支持流式回答')
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let finished = false
+    const consumeEvent = rawEvent => {
+      let eventName = 'message'
+      const dataLines = []
+      for (const line of rawEvent.split(/\r?\n/)) {
+        if (line.startsWith('event:')) eventName = line.slice(6).trim()
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
+      }
+      if (!dataLines.length) return
+      const payload = JSON.parse(dataLines.join('\n'))
+      if (eventName === 'phase') answerPhase.value = payload.phase || answerPhase.value
+      if (eventName === 'token') answerDraft.value += payload.text || ''
+      if (eventName === 'complete') {
+        answerResult.value = payload
+        answerDraft.value = ''
+        finished = true
+      }
+      if (eventName === 'error') throw new Error(payload.message || '知识库回答失败，请稍后重试')
+    }
+    while (true) {
+      const { value, done } = await reader.read()
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+      const events = buffer.split(/\r?\n\r?\n/)
+      buffer = events.pop() || ''
+      for (const event of events) consumeEvent(event)
+      if (done) break
+    }
+    if (buffer.trim()) consumeEvent(buffer)
+    if (!finished) throw new Error('流式回答意外结束，请重试')
   } catch (cause) {
-    answerError.value = cause.message || '知识库回答失败，请稍后重试'
+    if (cause?.name !== 'AbortError' && requestId === answerRequestId) {
+      answerError.value = cause.message || '知识库回答失败，请稍后重试'
+    }
   } finally {
-    asking.value = false
+    if (requestId === answerRequestId) {
+      asking.value = false
+      activeAskController = null
+    }
   }
 }
 
@@ -1219,6 +1389,9 @@ function formatDate(value) {
 .cross-search-hint { margin: 7px 0 0; color: var(--text-sub); font: .66rem/1.5 monospace; }
 .cross-search-error { margin: 8px 0 0; color: #ff6876; font: .72rem/1.5 monospace; }
 .answer-results { margin: 0 0 24px; border: 1px solid rgba(197,249,70,.35); background: rgba(197,249,70,.035); }
+.answer-results-draft { border-color: rgba(197,249,70,.2); background: rgba(197,249,70,.02); }
+.streaming-caret { display: inline-block; margin-left: 2px; color: var(--accent-lime); animation: stream-caret-blink 1s steps(2, start) infinite; }
+@keyframes stream-caret-blink { to { visibility: hidden; } }
 .answer-results.is-insufficient { border-color: rgba(242,191,107,.45); background: rgba(242,191,107,.035); }
 .answer-results-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 13px; border-bottom: 1px solid rgba(197,249,70,.22); }
 .is-insufficient .answer-results-head { border-color: rgba(242,191,107,.24); }
@@ -1283,6 +1456,9 @@ function formatDate(value) {
 .status-indexed { color: var(--accent-lime); }
 .status-ready { color: var(--accent-lime); }
 .status-failed { color: #ff7a6b; }
+.status-no_job { color: #f2bf6b; }
+.status-queued { color: #f2bf6b; }
+.status-analyzing { color: #7fd1ff; }
 .source-move { padding: 6px 10px; font: .7rem/1 monospace; }
 .move-tray { position: sticky; bottom: 0; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(130px, .7fr) minmax(150px, .8fr) auto; align-items: end; gap: 13px; margin: 0 -34px -30px; padding: 16px 34px; border-top: 1px solid rgba(197,249,70,.5); background: #111318; box-shadow: 0 -16px 30px rgba(0,0,0,.25); }
 .move-tray p, .move-tray label { display: block; margin-bottom: 4px; color: var(--text-sub); font: .65rem/1.2 monospace; }

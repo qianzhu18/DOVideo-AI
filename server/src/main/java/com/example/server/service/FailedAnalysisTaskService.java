@@ -116,7 +116,16 @@ public class FailedAnalysisTaskService {
         String activeKey = AnalysisTaskKeys.active(contentHash, goalDigest);
         Boolean accepted = redisTemplate.opsForValue().setIfAbsent(
                 activeKey, String.valueOf(task.getMediaId()), ACTIVE_TTL);
-        if (!Boolean.TRUE.equals(accepted)) throw new IllegalArgumentException("相同任务正在处理中");
+        if (!Boolean.TRUE.equals(accepted)) {
+            // 幂等键是尽力而为的状态：进程死亡会把它残留最多 6 小时。台账才是“任务真的
+            // 在跑”的权威——没有进行中的台账记录时清掉陈旧键再试一次，别把重放锁死在幽灵上。
+            if (taskLedger.hasActiveTask(task.getMediaId())
+                    || !Boolean.TRUE.equals(redisTemplate.delete(activeKey))
+                    || !Boolean.TRUE.equals(redisTemplate.opsForValue().setIfAbsent(
+                            activeKey, String.valueOf(task.getMediaId()), ACTIVE_TTL))) {
+                throw new IllegalArgumentException("相同任务正在处理中");
+            }
+        }
 
         boolean dispatched = false;
         try {

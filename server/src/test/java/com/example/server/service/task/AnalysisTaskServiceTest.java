@@ -244,4 +244,25 @@ class AnalysisTaskServiceTest {
         assertEquals(9L, captor.getValue().getId());
         assertEquals("PROCESSING", captor.getValue().getState());
     }
+
+    @Test
+    void hasActiveTaskSeesQueuedAndProcessingRowsOnly() {
+        // 投递侧用这个判定幂等键是不是僵尸残留：台账说在跑才算在跑。
+        when(taskMapper.selectList(any()))
+                .thenReturn(List.of(row(9L, "QUEUED")))
+                .thenReturn(List.of(row(9L, "PROCESSING")))
+                .thenReturn(List.of(row(9L, "FAILED")))
+                .thenReturn(List.of());
+        assertTrue(service.hasActiveTask(MEDIA_ID));
+        assertTrue(service.hasActiveTask(MEDIA_ID));
+        assertTrue(!service.hasActiveTask(MEDIA_ID));
+        assertTrue(!service.hasActiveTask(MEDIA_ID));
+    }
+
+    @Test
+    void hasActiveTaskHandlesMissingMediaAndNullId() {
+        when(taskMapper.selectList(any())).thenReturn(List.of());
+        assertTrue(!service.hasActiveTask(999L));
+        assertTrue(!service.hasActiveTask(null));
+    }
 }

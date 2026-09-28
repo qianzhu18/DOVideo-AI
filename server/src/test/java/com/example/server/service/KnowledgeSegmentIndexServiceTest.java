@@ -38,7 +38,10 @@ class KnowledgeSegmentIndexServiceTest {
         when(sourceService.requireSourceByMediaId(5L)).thenReturn(source(9L, 5L));
         when(versionMapper.selectOne(any())).thenReturn(version(11L, 1));
         when(checkpointService.loadChunks(5L)).thenReturn(List.of(chunk(0, 60_000, "0.1", "0.2")));
-        when(embeddingUtils.embed(any(String.class))).thenReturn(List.of(0.5));
+        when(embeddingUtils.embedBatch(any())).thenAnswer(invocation -> {
+            List<String> texts = invocation.getArgument(0);
+            return texts.stream().map(ignored -> List.of(0.5)).toList();
+        });
 
         KnowledgeSegmentIndexService service = new KnowledgeSegmentIndexService(
                 sourceService, versionMapper, segmentMapper, vectorStore, checkpointService,
@@ -107,7 +110,10 @@ class KnowledgeSegmentIndexServiceTest {
         when(sourceService.requireSourceByMediaId(5L)).thenReturn(source(9L, 5L));
         when(versionMapper.selectOne(any())).thenReturn(version(11L, 1));
         when(checkpointService.loadChunks(5L)).thenReturn(List.of(chunk(0, 60_000, "0.1", "0.2")));
-        when(embeddingUtils.embed(any(String.class))).thenReturn(List.of(0.5));
+        when(embeddingUtils.embedBatch(any())).thenAnswer(invocation -> {
+            List<String> texts = invocation.getArgument(0);
+            return texts.stream().map(ignored -> List.of(0.5)).toList();
+        });
 
         KnowledgeSegmentIndexService service = new KnowledgeSegmentIndexService(
                 sourceService, versionMapper, segmentMapper, vectorStore, checkpointService,
@@ -116,7 +122,9 @@ class KnowledgeSegmentIndexServiceTest {
 
         // Evidence granularity is the segment, so every segment gets its own vector even
         // when the checkpoint chunk already carries a coarser chunk-level embedding.
-        verify(embeddingUtils, times(2)).embed(any(String.class));
+        ArgumentCaptor<List<String>> embeddingBatch = ArgumentCaptor.forClass(List.class);
+        verify(embeddingUtils).embedBatch(embeddingBatch.capture());
+        assertEquals(2, embeddingBatch.getValue().size());
     }
 
     @Test

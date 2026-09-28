@@ -17,6 +17,7 @@ import com.example.server.mapper.KnowledgeSourceMapper;
 import com.example.server.mapper.KnowledgeSourceTagMapper;
 import com.example.server.mapper.KnowledgeSourceVersionMapper;
 import com.example.server.mapper.MediaFileMapper;
+import com.example.server.service.task.AnalysisTaskService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
@@ -64,6 +65,8 @@ public class KnowledgeSourceService {
     /** Filing an un-analyzed source into a space starts its analysis: entering the
      *  knowledge base is the product's cue that this asset should become searchable. */
     private final AnalysisDispatchService dispatchService;
+    /** Ledger read model: tells never-dispatched sources apart from failed ones. */
+    private final AnalysisTaskService taskLedger;
     static final String DEFAULT_ANALYSIS_GOAL = "理解视频核心内容并生成结构化分析报告";
 
     public KnowledgeSourceService(KnowledgeSourceMapper sourceMapper,
@@ -74,7 +77,8 @@ public class KnowledgeSourceService {
                                   KnowledgeCollectionService collectionService,
                                   QdrantVectorStore vectorStore,
                                   KnowledgeAuditService auditService,
-                                  @org.springframework.context.annotation.Lazy AnalysisDispatchService dispatchService) {
+                                  @org.springframework.context.annotation.Lazy AnalysisDispatchService dispatchService,
+                                  AnalysisTaskService taskLedger) {
         this.sourceMapper = sourceMapper;
         this.versionMapper = versionMapper;
         this.tagMapper = tagMapper;
@@ -84,6 +88,7 @@ public class KnowledgeSourceService {
         this.vectorStore = vectorStore;
         this.auditService = auditService;
         this.dispatchService = dispatchService;
+        this.taskLedger = taskLedger;
     }
 
     @Transactional
@@ -122,11 +127,24 @@ public class KnowledgeSourceService {
 
     @Transactional
     public KnowledgeSourceView attachExistingMedia(Long userId, Long mediaId, KnowledgeSourceLocationRequest request) {
+        return attachExistingMedia(userId, mediaId, request, true);
+    }
+
+    /** Files imported with a custom goal must be queued exactly once by their caller. */
+    @Transactional
+    public KnowledgeSourceView attachExistingMediaWithoutAutoDispatch(
+            Long userId, Long mediaId, KnowledgeSourceLocationRequest request) {
+        return attachExistingMedia(userId, mediaId, request, false);
+    }
+
+    private KnowledgeSourceView attachExistingMedia(Long userId, Long mediaId,
+                                                     KnowledgeSourceLocationRequest request,
+                                                     boolean dispatchPending) {
         MediaFile media = mediaFileMapper.selectById(mediaId);
         if (media == null) throw new BusinessException(ErrorCode.NOT_FOUND, "视频不存在");
         if (!userId.equals(media.getUserId())) throw new SecurityException("无权访问该视频");
         KnowledgeSource source = ensureMediaSource(media);
-        return move(userId, source.getId(), request);
+        return move(userId, source.getId(), request, dispatchPending);
     }
 
     public List<KnowledgeSourceView> list(Long userId, Long spaceId, Long collectionId, String tag) {
@@ -235,6 +253,12 @@ public class KnowledgeSourceService {
 
     @Transactional
     public KnowledgeSourceView move(Long userId, Long sourceId, KnowledgeSourceLocationRequest request) {
+        return move(userId, sourceId, request, true);
+    }
+
+    private KnowledgeSourceView move(Long userId, Long sourceId,
+                                     KnowledgeSourceLocationRequest request,
+                                     boolean dispatchPending) {
         KnowledgeSource source = requireOwnedSource(userId, sourceId);
         Long previousSpaceId = source.getSpaceId();
         Long previousCollectionId = source.getCollectionId();
@@ -252,7 +276,7 @@ public class KnowledgeSourceService {
                 .set("space_id", source.getSpaceId())
                 .set("collection_id", source.getCollectionId()));
         syncVectorLocation(source);
-        dispatchIfPending(source);
+        if (dispatchPending) dispatchIfPending(source);
         auditService.record(userId, "SOURCE_MOVED", "SOURCE", source.getId(), source.getSpaceId(), source.getCollectionId(),
                 "fromSpace=" + previousSpaceId + ";fromCollection=" + previousCollectionId);
         return KnowledgeSourceView.from(source);
@@ -270,10 +294,11 @@ public class KnowledgeSourceService {
     }
 
     /**
-     * Space-level catch-up for sources filed before auto-dispatch existed (or whose
-     * dispatch failed): starts the default analysis for every still-PENDING source in
-     * the space. Idempotent — submit deduplicates concurrent tasks and READY sources
-     * never re-enter the pipeline.
+     * Space-level catch-up for sources that never entered the pipeline: starts the
+     * default analysis for every still-PENDING source with no ledger row. Sources whose
+     * task already FAILED keep their row (the audit trail of what burnt out) and recover
+     * through {@code reindex} from checkpoints instead of a full re-run — re-dispatching
+     * them here would silently re-burn transcription time and report budget.
      */
     public int dispatchPendingInSpace(Long userId, Long spaceId) {
         spaceService.requireOwnedSpace(userId, spaceId);
@@ -282,11 +307,22 @@ public class KnowledgeSourceService {
                 .eq("space_id", spaceId)
                 .eq("status", STATUS_PENDING));
         int dispatched = 0;
-        for (KnowledgeSource source : pending) {
-            if (dispatchPending(source, "space-catch-up")) dispatched += 1;
+        if (!pending.isEmpty()) {
+            Set<Long> mediaIds = pending.stream()
+                    .map(KnowledgeSource::getMediaId)
+                    .collect(Collectors.toSet());
+            var ledgerRows = taskLedger.latestByMediaIds(mediaIds);
+            Set<Long> alreadyDispatched = ledgerRows == null ? Set.of() : ledgerRows.keySet();
+            List<KnowledgeSource> neverDispatched = pending.stream()
+                    .filter(source -> !alreadyDispatched.contains(source.getMediaId()))
+                    .toList();
+            for (KnowledgeSource source : neverDispatched) {
+                if (dispatchPending(source, "space-catch-up")) dispatched += 1;
+            }
+            auditService.record(userId, "SPACE_PENDING_DISPATCHED", "SPACE", spaceId, spaceId, null,
+                    "pending=" + pending.size() + ";neverDispatched=" + neverDispatched.size()
+                            + ";dispatched=" + dispatched);
         }
-        auditService.record(userId, "SPACE_PENDING_DISPATCHED", "SPACE", spaceId, spaceId, null,
-                "pending=" + pending.size() + ";dispatched=" + dispatched);
         return dispatched;
     }
 
