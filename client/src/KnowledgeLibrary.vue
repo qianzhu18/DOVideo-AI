@@ -498,9 +498,20 @@ const startProgressPolling = () => {
       const stillPending = freshSources.some(s => s.status === 'PENDING')
       if (!stillPending) {
         stopProgressPolling()
-        const failed = freshSources.filter(s => s.status === 'FAILED').length
-        notice.value = failed
-          ? `解析批次结束：${freshSources.length - failed} 个成功，${failed} 个失败（卡片上可单独重试）`
+        const failedSources = freshSources.filter(s => s.status === 'FAILED')
+        // 预算超限等失败里，转写其实已落存档：reindex 从 checkpoint 直接补索引，
+        // 不重烧 ASR。逐个尽力恢复，恢复不了的才需要人工。
+        let recovered = 0
+        for (const failedSource of failedSources) {
+          try {
+            await request(`/knowledge/sources/${failedSource.id}/reindex`, { method: 'POST' })
+            recovered += 1
+          } catch { /* 该源无存档时保持 FAILED，卡片上可手动重试 */ }
+        }
+        if (recovered) await refreshCurrent()
+        const stillFailed = failedSources.length - recovered
+        notice.value = stillFailed > 0
+          ? `解析批次结束：${freshSources.length - failedSources.length} 个成功，${stillFailed} 个未能自动恢复（可点卡片 Video Agent 重试）`
           : '全部视频解析完成，现在可以直接向这个知识空间提问了'
       }
     } catch {
