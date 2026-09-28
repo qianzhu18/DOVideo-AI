@@ -778,8 +778,7 @@ const runUploadQueue = async () => {
   if (queue.length === 1) {
     const only = queue[0]
     if (only.status === 'done') {
-      showMsg(`✅ ${only.name} 上传完成`)
-      if (lastMedia) openAgent(lastMedia)
+      showMsg(`✅ ${only.name} 上传完成，已自动开始解析`)
     } else if (only.status === 'failed' && !only.message?.includes('已取消')) {
       showMsg(`❌ 上传失败：${only.message || '未知错误'}`, true)
     } else if (only.status === 'failed') {
@@ -850,6 +849,14 @@ const rememberResumableUpload = target => {
   }
 }
 
+/** 上传完成后的统一收尾：后端已自动派发默认分析，打开面板并立即接管进度流
+ *  （面板 goal 与后端同源 → 409 接管 / 200 复用结果 / 202 正常启动）。 */
+const openAnalysisProgress = uploadedMedia => {
+  if (!uploadedMedia?.id) return
+  openAgent(uploadedMedia)
+  submitAgent()
+}
+
 /** 上传 file.value 单个文件；提示职责在调用方，这里只返回结构化结果。 */
 const uploadFile = async () => {
   const target = file.value
@@ -878,6 +885,7 @@ const uploadFile = async () => {
     if (currentUser.value?.id !== uploadUserId) return { ok: false, skipped: true }
     resumableFile.value = null
     await fetchList({ notify: true })
+    openAnalysisProgress(uploadedMedia)
     return { ok: true, media: uploadedMedia }
   } catch (error) {
     if (currentUser.value?.id !== uploadUserId) return { ok: false, skipped: true }
@@ -905,8 +913,7 @@ const resumeUpload = async () => {
   uploadQueue.value = []
   const result = await uploadFile()
   if (result.ok) {
-    showMsg(`✅ ${target.name} 上传完成`)
-    if (result.media) openAgent(result.media)
+    showMsg(`✅ ${target.name} 上传完成，已自动开始解析`)
   } else if (result.aborted) {
     showMsg('上传已取消，进度已保留，可点“继续上传”接着传')
   } else if (result.error) {
@@ -980,10 +987,10 @@ const handleUrlUpload = async () => {
     const uploadedMedia = await res.json()
     if (currentUser.value?.id !== uploadUserId) return
 
-    showMsg('✅ 链接资源已入库')
+    showMsg('✅ 链接资源已入库，已自动开始解析')
     videoUrl.value = ''
     await fetchList({ notify: true })
-    openAgent(uploadedMedia)
+    openAnalysisProgress(uploadedMedia)
   } catch (error) {
     console.error(error)
     if (currentUser.value?.id !== uploadUserId) return

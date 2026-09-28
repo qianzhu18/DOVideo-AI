@@ -3,7 +3,9 @@ import { apiRequest } from './api'
 import { DEMO_EVALUATION, DEMO_ITEM, DEMO_PLAN, DEMO_RESULT, DEMO_TRACE } from './demoData'
 import { renderMarkdown } from './markdown'
 
-const DEFAULT_GOAL = '理解视频核心内容，提炼关键结论，并给出带时间戳的证据和可执行建议'
+// 与后端 MediaController.DEFAULT_ANALYSIS_GOAL 保持一致：上传即自动派发的任务身份必须同源，
+// 否则面板会以另一个 goal 再提交一遍（同视频双跑）。
+const DEFAULT_GOAL = '理解视频核心内容并生成结构化分析报告'
 
 // 分析模式选项。GENERAL/LEARNING/REVIEW/CREATION 与后端 AnalysisMode 枚举一一对应,value 直接作为 mode 参数;
 // AUTO 是纯前端选项:提交前先调 /analysis/route 让 AI 判定出具体模式,再据此发起分析——
