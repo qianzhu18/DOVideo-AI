@@ -196,6 +196,16 @@
         </aside>
 
         <section class="source-pane">
+          <div v-if="parseProgress.active" class="parse-progress" role="status">
+            <div class="parse-progress-head">
+              <strong>{{ parseProgress.label }}</strong>
+              <span>{{ parseProgress.readyCount }}/{{ parseProgress.total }} 已入库</span>
+              <span class="parse-eta">{{ parseProgress.etaText }}</span>
+            </div>
+            <div class="parse-progress-bar" aria-hidden="true">
+              <span :style="{ width: `${Math.round((parseProgress.readyCount / Math.max(1, parseProgress.total)) * 100)}%` }"></span>
+            </div>
+          </div>
           <header class="source-header">
             <div>
               <p class="source-path">{{ selectedSpace?.name || '正在载入' }} <span>/</span> {{ selectedCollection?.name || '根目录' }}</p>
@@ -311,7 +321,8 @@
               <div class="source-copy">
                 <h3 :title="source.title">{{ source.title }}</h3>
                 <p>
-                  <span :class="['status-chip', `status-${source.status.toLowerCase()}`]">{{ source.status }}</span>
+                  <span :class="['status-chip', `status-${(liveStatus(source) || source.status).toLowerCase()}`]">{{ liveStatus(source) || source.status }}</span>
+                  <span v-if="liveStage(source)">&nbsp;· {{ liveStage(source) }}</span>
                   <span>版本 {{ source.currentVersion }}</span>
                   <span>{{ formatDate(source.updatedAt) }}</span>
                 </p>
@@ -409,7 +420,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { apiRequest } from './api'
 
 const props = defineProps({ user: { type: Object, default: null } })
@@ -424,6 +435,81 @@ const loading = ref(false)
 const saving = ref(false)
 const dispatchingPending = ref(false)
 const pendingCount = computed(() => sources.value.filter(source => source.status === 'PENDING').length)
+// 解析进度可视化：PENDING 源存在时轮询任务台账，把"排队/转写/索引"实时映射到卡片。
+const taskStates = ref({})
+const parseProgress = computed(() => {
+  const total = sources.value.length
+  const readyCount = sources.value.filter(s => s.status !== 'PENDING').length
+  const parsing = sources.value.filter(s => {
+    const task = taskStates.value[s.mediaId]
+    return s.status === 'PENDING' && task?.state === 'PROCESSING'
+  }).length
+  const queued = Math.max(0, pendingCount.value - parsing)
+  const active = pendingCount.value > 0
+  // 经验值：单期 30-50 分钟视频全程解析约 3-6 分钟；并发 4。给个粗但诚实的区间。
+  const etaMinutes = Math.max(1, Math.ceil((pendingCount.value * 5) / 4))
+  return {
+    active,
+    total,
+    readyCount,
+    parsing,
+    queued,
+    label: queued > 0 ? `解析中 ${parsing} · 排队 ${queued}` : `解析中 ${parsing}`,
+    etaText: active ? `预计还需约 ${etaMinutes}–${etaMinutes * 2} 分钟` : '',
+  }
+})
+const liveStatus = source => {
+  const task = taskStates.value[source.mediaId]
+  if (source.status !== 'PENDING' || !task) return null
+  if (task.state === 'PROCESSING') return 'ANALYZING'
+  if (task.state === 'QUEUED') return 'QUEUED'
+  return null
+}
+const liveStage = source => {
+  const task = taskStates.value[source.mediaId]
+  if (!task || source.status !== 'PENDING') return null
+  const stageText = {
+    VIDEO_CONTEXT: '转写+画面识别中',
+    CHUNK_SUMMARY: '分块摘要中',
+    PLANNER: '规划分析中',
+    AGENT_LOOP: '生成分析报告中',
+    EXECUTOR: '生成分析报告中',
+  }[task.latestStage]
+  if (task.state === 'QUEUED') return '排队等待解析'
+  return stageText || null
+}
+let progressTimer = null
+const stopProgressPolling = () => {
+  if (progressTimer) { clearInterval(progressTimer); progressTimer = null }
+}
+const startProgressPolling = () => {
+  if (progressTimer) return
+  progressTimer = setInterval(async () => {
+    if (!selectedSpaceId.value || pendingCount.value === 0) { stopProgressPolling(); return }
+    try {
+      const [freshSources, tasks] = await Promise.all([
+        request(`/knowledge/sources?spaceId=${selectedSpaceId.value}`),
+        request('/analysis/tasks'),
+      ])
+      sources.value = freshSources
+      const mediaIds = new Set(freshSources.map(s => s.mediaId))
+      taskStates.value = Object.fromEntries(
+        (tasks || []).filter(t => mediaIds.has(t.mediaId)).map(t => [t.mediaId, t]))
+      const stillPending = freshSources.some(s => s.status === 'PENDING')
+      if (!stillPending) {
+        stopProgressPolling()
+        const failed = freshSources.filter(s => s.status === 'FAILED').length
+        notice.value = failed
+          ? `解析批次结束：${freshSources.length - failed} 个成功，${failed} 个失败（卡片上可单独重试）`
+          : '全部视频解析完成，现在可以直接向这个知识空间提问了'
+      }
+    } catch {
+      // 轮询失败静默：下一次 tick 会重试，不打断用户。
+    }
+  }, 8000)
+}
+watch(pendingCount, count => { if (count > 0) startProgressPolling() }, { immediate: true })
+onUnmounted(stopProgressPolling)
 const error = ref('')
 const notice = ref('')
 const spaceComposerOpen = ref(false)
@@ -619,6 +705,7 @@ async function analyzePending() {
       ? `已派发 ${result.dispatched} 个视频进入解析队列（转写→索引，完成后卡片变 READY）`
       : '没有需要解析的视频'
     await refreshCurrent()
+    if (result?.dispatched > 0) startProgressPolling()
   } catch (cause) {
     error.value = cause.message || '批量解析派发失败'
   } finally {
@@ -1084,6 +1171,14 @@ function formatDate(value) {
 .form-actions button, .move-actions button { padding: 5px 8px; font-size: .72rem; }
 .text-action { color: var(--accent-lime) !important; }
 .source-pane { position: relative; min-width: 0; padding: 30px 34px; }
+/* 解析批次进度条：派发后实时反映"排队/转写/索引"到 READY 的推进 */
+.parse-progress { margin-bottom: 18px; padding: 12px 16px; border: 1px solid var(--border-tech); border-radius: 8px; }
+.parse-progress-head { display: flex; gap: 14px; align-items: baseline; font-size: 0.82rem; }
+.parse-progress-head strong { color: var(--text-main); }
+.parse-progress-head span { color: var(--text-sub); font-family: monospace; font-size: 0.78rem; }
+.parse-progress-head .parse-eta { margin-left: auto; }
+.parse-progress-bar { margin-top: 8px; height: 6px; border-radius: 3px; background: rgba(200, 245, 66, 0.12); overflow: hidden; }
+.parse-progress-bar span { display: block; height: 100%; background: #c8f542; transition: width 0.6s ease; }
 .source-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; padding-bottom: 22px; border-bottom: 1px solid var(--border-tech); }
 .source-path { color: var(--text-sub); font: .72rem/1.5 monospace; }
 .source-path span { color: var(--accent-lime); margin: 0 5px; }
