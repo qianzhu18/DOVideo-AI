@@ -150,8 +150,8 @@ class KnowledgeSourceServiceTest {
                 mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class), dispatchService);
         service.move(7L, 21L, new KnowledgeSourceLocationRequest(5L, null));
 
-        verify(dispatchService).submit(eq(media), eq(KnowledgeSourceService.DEFAULT_ANALYSIS_GOAL),
-                isNull(), eq(com.example.server.dto.AnalysisMode.GENERAL));
+        verify(dispatchService).submitBulk(eq(media), eq(KnowledgeSourceService.DEFAULT_ANALYSIS_GOAL),
+                eq(com.example.server.dto.AnalysisMode.GENERAL));
     }
 
     @Test
@@ -173,6 +173,7 @@ class KnowledgeSourceServiceTest {
                 mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class), dispatchService);
         service.move(7L, 21L, new KnowledgeSourceLocationRequest(5L, null));
 
+        verify(dispatchService, never()).submitBulk(any(), org.mockito.ArgumentMatchers.anyString(), any());
         verify(dispatchService, never()).submit(any(), org.mockito.ArgumentMatchers.anyString(), any(), any());
     }
 
@@ -349,6 +350,9 @@ class KnowledgeSourceServiceTest {
         when(mediaMapper.selectById(71L)).thenReturn(media(71L));
         // media 72 missing from the table: dispatch skips it instead of failing the batch
         when(mediaMapper.selectById(72L)).thenReturn(null);
+        org.mockito.Mockito.doReturn(AnalysisDispatchService.SubmissionResult.ACCEPTED)
+                .when(dispatchService).submitBulk(any(MediaFile.class), org.mockito.ArgumentMatchers.anyString(),
+                        any(com.example.server.dto.AnalysisMode.class));
 
         KnowledgeSourceService service = new KnowledgeSourceService(
                 sourceMapper, mock(KnowledgeSourceVersionMapper.class),
@@ -359,8 +363,8 @@ class KnowledgeSourceServiceTest {
         int dispatched = service.dispatchPendingInSpace(7L, 5L);
 
         assertEquals(1, dispatched);
-        verify(dispatchService).submit(any(MediaFile.class),
-                eq(KnowledgeSourceService.DEFAULT_ANALYSIS_GOAL), isNull(), any());
+        verify(dispatchService).submitBulk(any(MediaFile.class),
+                eq(KnowledgeSourceService.DEFAULT_ANALYSIS_GOAL), any());
         verify(spaceService).requireOwnedSpace(7L, 5L);
     }
 

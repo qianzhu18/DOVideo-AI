@@ -9,6 +9,7 @@ import com.example.server.service.AgentCheckpointService;
 import com.example.server.service.AgentLoopService;
 import com.example.server.service.AiService;
 import com.example.server.service.FailedAnalysisTaskService;
+import com.example.server.service.KnowledgeSegmentIndexService;
 import com.example.server.service.MediaService;
 import com.example.server.service.TaskEventService;
 import com.example.server.service.task.AnalysisTaskService;
@@ -66,6 +67,7 @@ class VideoAnalysisConsumerTest {
     private final MediaService mediaService = mock(MediaService.class);
     private final TaskEventService taskEventService = mock(TaskEventService.class);
     private final AnalysisTaskService taskLedger = mock(AnalysisTaskService.class);
+    private final KnowledgeSegmentIndexService segmentIndexService = mock(KnowledgeSegmentIndexService.class);
 
     private VideoAnalysisConsumer consumer;
 
@@ -79,7 +81,7 @@ class VideoAnalysisConsumerTest {
         when(valueOps.get(anyString())).thenReturn(null);
         consumer = new VideoAnalysisConsumer(aiService, redissonClient, redisTemplate,
                 checkpointService, rocketMQTemplate, failedTaskService, mediaService,
-                taskEventService, taskLedger, DEAD_TOPIC);
+                taskEventService, taskLedger, segmentIndexService, DEAD_TOPIC);
     }
 
     private AnalysisTaskMsg msg() {

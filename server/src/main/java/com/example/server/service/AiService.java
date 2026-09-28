@@ -104,6 +104,9 @@ public class AiService {
 
             VideoContext videoContext = resolveContext(mediaFile, userGoal, traceId, resolvedMode);
             mediaFile.setTranscriptText(videoContext.transcriptText());
+            // 索引先行：转写与分块就绪即入库可检索。知识库的可用性不能被下游 Agent 报告
+            // 连坐——长视频的 Agent 轮次可能超预算失败，而转写与向量此时已完整可用。
+            indexKnowledge(mediaId);
             currentStage = TaskStage.AGENT_LOOP;
             taskEventService.publishAnalysis(mediaId, userGoal, resolvedMode,
                     TaskStatus.of(TaskStatus.State.PROCESSING, "多模态上下文已就绪，Agent 开始分析"),
@@ -119,7 +122,6 @@ public class AiService {
             persistResult(mediaFile, agentState);
             log.info("agent_analysis_completed traceId={} mediaId={} rounds={}",
                     traceId, mediaId, agentState.round());
-            indexKnowledge(mediaId);
         } catch (Exception e) {
             try {
                 checkpointService.saveFailure(mediaId, userGoal, resolvedMode, currentStage, e);

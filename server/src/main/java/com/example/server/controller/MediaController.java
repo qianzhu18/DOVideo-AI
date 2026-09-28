@@ -102,7 +102,7 @@ public class MediaController {
     private void dispatchDefaultAnalysis(Long mediaId, Long userId) {
         try {
             MediaFile mediaFile = mediaService.requireOwnedMedia(mediaId, userId);
-            dispatchService.submit(mediaFile, DEFAULT_ANALYSIS_GOAL, null, AnalysisMode.GENERAL);
+            dispatchService.submitBulk(mediaFile, DEFAULT_ANALYSIS_GOAL, AnalysisMode.GENERAL);
         } catch (RuntimeException e) {
             // Dedup replays, rate limits and quota exhaustion all land here; the upload
             // itself is already durable and the user can start analysis from the card.

@@ -157,7 +157,7 @@ public class KnowledgeIngestService {
 
     private void dispatch(MediaFile media) {
         try {
-            dispatchService.submit(media, DEFAULT_INGEST_GOAL, null,
+            dispatchService.submitBulk(media, DEFAULT_INGEST_GOAL,
                     com.example.server.dto.AnalysisMode.GENERAL);
         } catch (RuntimeException e) {
             log.warn("knowledge_ingest_dispatch_failed mediaId={}", media.getId(), e);

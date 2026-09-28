@@ -294,11 +294,19 @@ public class KnowledgeSourceService {
         try {
             MediaFile media = mediaFileMapper.selectById(source.getMediaId());
             if (media == null) return false;
-            dispatchService.submit(media, DEFAULT_ANALYSIS_GOAL, null,
+            AnalysisDispatchService.SubmissionResult result = dispatchService.submitBulk(
+                    media, DEFAULT_ANALYSIS_GOAL,
                     com.example.server.dto.AnalysisMode.GENERAL);
-            log.info("knowledge_filing_dispatched_analysis trigger={} sourceId={} mediaId={}",
-                    trigger, source.getId(), source.getMediaId());
-            return true;
+            boolean accepted = result == AnalysisDispatchService.SubmissionResult.ACCEPTED
+                    || result == AnalysisDispatchService.SubmissionResult.DUPLICATE;
+            if (accepted) {
+                log.info("knowledge_filing_dispatched_analysis trigger={} sourceId={} mediaId={} result={}",
+                        trigger, source.getId(), source.getMediaId(), result);
+            } else {
+                log.warn("knowledge_filing_dispatch_rejected trigger={} sourceId={} mediaId={} result={}",
+                        trigger, source.getId(), source.getMediaId(), result);
+            }
+            return accepted;
         } catch (RuntimeException e) {
             log.warn("knowledge_filing_dispatch_failed trigger={} sourceId={}", trigger, source.getId(), e);
             return false;
