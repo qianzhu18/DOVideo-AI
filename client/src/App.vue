@@ -711,10 +711,12 @@ const startUpload = async (fileList) => {
 
 const runUploadQueue = async () => {
   const queue = uploadQueue.value
+  const isBatch = queue.length > 1
   uploading.value = true
   uploadAbort.value = new AbortController()
   let succeeded = 0
   let failed = 0
+  let dispatched = 0
   let lastMedia = null
 
   try {
@@ -734,6 +736,17 @@ const runUploadQueue = async () => {
         item.message = ''
         succeeded += 1
         lastMedia = result.media
+        // 批量场景与目录导入同语义：传完即用默认目标排队分析（RocketMQ 异步，
+        // 卡片状态与任务台账可见）；单文件仍走 openAgent 让用户自选目标。
+        if (isBatch && result.media?.id) {
+          try {
+            const params = new URLSearchParams({ id: String(result.media.id), mode: 'GENERAL' })
+            const response = await apiRequest(`/analysis/ai?${params}`, { method: 'POST' })
+            if (response.ok || response.status === 202) dispatched += 1
+          } catch {
+            // 派发失败不回滚上传：用户可稍后点卡片的 Video Agent 手动开始。
+          }
+        }
       } else if (result.skipped) {
         item.status = 'failed'
         item.message = '已跳过'
@@ -778,7 +791,8 @@ const runUploadQueue = async () => {
 
   const skipped = queue.length - succeeded - failed
   const summary = `批量上传结束：成功 ${succeeded}，失败 ${failed}${skipped ? `，跳过 ${skipped}` : ''}`
-  showMsg(failed ? `⚠️ ${summary}（失败文件进度已保留，可重新选择后继续）` : `✅ ${summary}`, failed > 0)
+  const dispatchNote = dispatched ? `；${dispatched} 个已自动开始分析（转写计费，进度看卡片状态）` : '；可点击卡片上的 Video Agent 开始分析'
+  showMsg(failed ? `⚠️ ${summary}（失败文件进度已保留，可重新选择后继续）${dispatchNote}` : `✅ ${summary}${dispatchNote}`, failed > 0)
   // 多文件完成后保留结果列表供用户查看；下次发起上传时自动清空。
 }
 
