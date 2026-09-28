@@ -107,6 +107,10 @@ public class KnowledgeSegmentIndexService {
     public void markIndexFailed(Long mediaId, String reason) {
         try {
             KnowledgeSource source = sourceService.requireSourceByMediaId(mediaId);
+            // With index-before-report, an already-READY source means the transcript and
+            // vectors are in place — a downstream agent-report failure (e.g. budget)
+            // must not drag the searchable asset back to FAILED.
+            if (STATUS_READY.equals(source.getStatus())) return;
             KnowledgeSourceVersion version = currentVersion(source);
             version.setStatus(STATUS_FAILED);
             version.setParserVersion(PARSER_VERSION);
