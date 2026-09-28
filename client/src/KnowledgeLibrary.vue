@@ -51,9 +51,13 @@
               v-for="space in spaces"
               :key="space.id"
               type="button"
-              class="space-item"
-              :class="{ active: space.id === selectedSpaceId }"
+              class="space-item drop-target"
+              :class="{ active: space.id === selectedSpaceId, 'drop-hover': hoverDropKey === `space:${space.id}` }"
+              :aria-label="`拖动内容源到 ${space.name} 归类`"
               @click="selectSpace(space.id)"
+              @dragover.prevent="hoverDropKey = `space:${space.id}`"
+              @dragleave="clearHover(`space:${space.id}`)"
+              @drop.prevent="dropSource($event, space.id, null)"
             >
               <span class="space-mark">{{ space.systemDefault ? '·' : '#' }}</span>
               <span class="space-copy"><strong>{{ space.name }}</strong><small>{{ space.systemDefault ? '默认接入区' : (space.description || '自定义空间') }}</small></span>
@@ -160,18 +164,30 @@
           </form>
 
           <div class="folder-list">
-            <button type="button" class="folder-item root-item" :class="{ active: selectedCollectionId === null }" @click="selectCollection(null)">
+            <button
+              type="button"
+              class="folder-item root-item drop-target"
+              :class="{ active: selectedCollectionId === null, 'drop-hover': hoverDropKey === 'collection:root' }"
+              :disabled="!selectedSpaceId"
+              @click="selectCollection(null)"
+              @dragover.prevent="hoverDropKey = 'collection:root'"
+              @dragleave="clearHover('collection:root')"
+              @drop.prevent="dropSource($event, selectedSpaceId, null)"
+            >
               <span>⌂</span><strong>空间根目录</strong>
             </button>
             <button
               v-for="collection in collections"
               :key="collection.id"
               type="button"
-              class="folder-item"
-              :class="{ active: collection.id === selectedCollectionId }"
+              class="folder-item drop-target"
+              :class="{ active: collection.id === selectedCollectionId, 'drop-hover': hoverDropKey === `collection:${collection.id}` }"
               :style="{ '--depth': collectionDepth(collection) }"
               :title="collection.path"
               @click="selectCollection(collection.id)"
+              @dragover.prevent="hoverDropKey = `collection:${collection.id}`"
+              @dragleave="clearHover(`collection:${collection.id}`)"
+              @drop.prevent="dropSource($event, selectedSpaceId, collection.id)"
             >
               <span>⌁</span><strong>{{ collection.name }}</strong>
               <small>{{ collection.path }}</small>
@@ -270,10 +286,19 @@
           <div v-else-if="sources.length === 0" class="source-empty">
             <p class="empty-index">000</p>
             <h3>这里还没有内容源</h3>
-            <p>从视频工作台上传视频后，它会自动进入“未分类”。你也可以把已入库视频移动到当前目录。</p>
+            <p>从视频工作台上传视频后，它会自动进入“未分类”。把其他空间里的视频卡片<strong>拖到左侧目标空间或目录</strong>即可归类。</p>
           </div>
           <ul v-else class="source-list">
-            <li v-for="source in sources" :key="source.id" class="source-row">
+            <li
+              v-for="source in sources"
+              :key="source.id"
+              class="source-row"
+              :class="{ 'is-dragging': draggingSource?.id === source.id }"
+              draggable="true"
+              :title="`按住拖到左侧空间或目录即可归类（${source.title}）`"
+              @dragstart="onSourceDragStart($event, source)"
+              @dragend="onSourceDragEnd"
+            >
               <div class="source-type">{{ source.sourceType === 'VIDEO' ? 'VID' : source.sourceType }}</div>
               <div class="source-copy">
                 <h3 :title="source.title">{{ source.title }}</h3>
@@ -399,6 +424,9 @@ const collectionParentId = ref(null)
 const newCollectionName = ref('')
 const movingSource = ref(null)
 const moveSpaceId = ref(null)
+// 访达式归类：源卡片可拖动，左侧空间/目录是 drop 目标。
+const draggingSource = ref(null)
+const hoverDropKey = ref(null)
 const moveCollectionId = ref(null)
 const moveCollections = ref([])
 const tagFilter = ref('')
@@ -670,6 +698,53 @@ async function moveSource() {
     await refreshCurrent()
   } catch (cause) {
     error.value = cause.message || '移动内容源失败'
+  } finally {
+    saving.value = false
+  }
+}
+
+// --- 拖拽归类：与「移动」按钮共用同一个 location 端点，只是入口变成手势 ---
+
+function onSourceDragStart(event, source) {
+  draggingSource.value = source
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', String(source.id))
+  }
+}
+
+function onSourceDragEnd() {
+  draggingSource.value = null
+  hoverDropKey.value = null
+}
+
+function clearHover(key) {
+  if (hoverDropKey.value === key) hoverDropKey.value = null
+}
+
+async function dropSource(event, spaceId, collectionId) {
+  const source = draggingSource.value
+  hoverDropKey.value = null
+  draggingSource.value = null
+  if (!source || !spaceId || saving.value) return
+  const samePlace = source.spaceId === spaceId
+    && (source.collectionId ?? null) === (collectionId ?? null)
+  if (samePlace) {
+    notice.value = `“${source.title}”已经在这个位置了`
+    return
+  }
+  saving.value = true
+  error.value = ''
+  try {
+    const moved = await request(`/knowledge/sources/${source.id}/location`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ spaceId, collectionId: collectionId ?? null })
+    })
+    notice.value = `已把“${moved.title}”归类到目标位置`
+    await refreshCurrent()
+  } catch (cause) {
+    error.value = cause.message || '拖拽归类失败'
   } finally {
     saving.value = false
   }
@@ -1059,6 +1134,11 @@ function formatDate(value) {
 .source-empty p:last-child { color: var(--text-sub); font-size: .86rem; line-height: 1.8; }
 .source-list { list-style: none; margin: 0; padding: 4px 0 96px; }
 .source-row { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; gap: 14px; padding: 17px 0; border-bottom: 1px solid rgba(42,45,53,.8); }
+/* 拖拽归类：源卡片可拖、拖动中淡化，drop 目标悬停时高亮成“文件夹”质感 */
+.source-row[draggable="true"] { cursor: grab; }
+.source-row.is-dragging { opacity: 0.45; }
+.drop-target { transition: box-shadow 0.15s ease, background-color 0.15s ease; }
+.drop-target.drop-hover { background-color: rgba(200, 245, 66, 0.10); box-shadow: inset 0 0 0 1px dashed rgba(200, 245, 66, 0.65); }
 .source-type { display: grid; place-items: center; width: 36px; height: 36px; background: rgba(197,249,70,.09); color: var(--accent-lime); font: 700 .66rem/1 monospace; letter-spacing: .05em; }
 .source-copy { min-width: 0; }
 .source-copy h3 { overflow: hidden; margin: 0 0 7px; font-size: .92rem; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }

@@ -1,6 +1,7 @@
 package com.example.server.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.example.server.common.ErrorCode;
 import com.example.server.dto.KnowledgeSourceLocationRequest;
 import com.example.server.dto.KnowledgeSourceTagsRequest;
@@ -237,7 +238,13 @@ public class KnowledgeSourceService {
                 : collectionService.requireCollectionInSpace(request.collectionId(), request.spaceId());
         source.setSpaceId(request.spaceId());
         source.setCollectionId(collection == null ? null : collection.getId());
-        sourceMapper.updateById(source);
+        // updateById skips null fields (MyBatis-Plus NOT_NULL strategy), which would
+        // leave a stale collectionId behind when moving to a space's root — exactly the
+        // "ghost source" case. Write location columns explicitly, nulls included.
+        sourceMapper.update(null, new UpdateWrapper<KnowledgeSource>()
+                .eq("id", source.getId())
+                .set("space_id", source.getSpaceId())
+                .set("collection_id", source.getCollectionId()));
         syncVectorLocation(source);
         auditService.record(userId, "SOURCE_MOVED", "SOURCE", source.getId(), source.getSpaceId(), source.getCollectionId(),
                 "fromSpace=" + previousSpaceId + ";fromCollection=" + previousCollectionId);

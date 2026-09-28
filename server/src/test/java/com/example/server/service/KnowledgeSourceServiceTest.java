@@ -1,5 +1,6 @@
 package com.example.server.service;
 
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.example.server.exception.BusinessException;
 import com.example.server.dto.KnowledgeSourceLocationRequest;
 import com.example.server.dto.KnowledgeSourceTagsRequest;
@@ -20,9 +21,11 @@ import org.mockito.ArgumentCaptor;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -86,7 +89,37 @@ class KnowledgeSourceServiceTest {
 
         assertEquals(5L, moved.spaceId());
         assertEquals(31L, moved.collectionId());
-        verify(sourceMapper).updateById(source);
+        verify(sourceMapper).update(isNull(), any(UpdateWrapper.class));
+    }
+
+    @Test
+    void movingToSpaceRootClearsCollectionIdExplicitly() {
+        // Regression for the ghost-source bug: updateById skips null fields under the
+        // MyBatis-Plus NOT_NULL strategy, leaving a stale collectionId pointing into
+        // the previous space. Moving to a root must write collection_id = NULL.
+        KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
+        KnowledgeSourceVersionMapper versionMapper = mock(KnowledgeSourceVersionMapper.class);
+        KnowledgeSourceTagMapper tagMapper = mock(KnowledgeSourceTagMapper.class);
+        MediaFileMapper mediaMapper = mock(MediaFileMapper.class);
+        KnowledgeSpaceService spaceService = mock(KnowledgeSpaceService.class);
+        KnowledgeCollectionService collectionService = mock(KnowledgeCollectionService.class);
+        KnowledgeSource source = new KnowledgeSource();
+        source.setId(21L);
+        source.setOwnerUserId(7L);
+        source.setSpaceId(3L);
+        source.setCollectionId(31L);
+        source.setStatus(KnowledgeSourceService.STATUS_PENDING);
+        when(sourceMapper.selectById(21L)).thenReturn(source);
+
+        KnowledgeSourceService service = new KnowledgeSourceService(
+                sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class));
+        KnowledgeSourceView moved = service.move(7L, 21L, new KnowledgeSourceLocationRequest(5L, null));
+
+        assertEquals(5L, moved.spaceId());
+        assertNull(moved.collectionId());
+        verify(sourceMapper).update(isNull(), any(UpdateWrapper.class));
+        verify(sourceMapper, never()).updateById(any(KnowledgeSource.class));
     }
 
     @Test
