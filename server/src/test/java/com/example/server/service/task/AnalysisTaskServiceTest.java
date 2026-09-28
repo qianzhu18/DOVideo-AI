@@ -225,4 +225,23 @@ class AnalysisTaskServiceTest {
         verify(taskMapper, never()).updateById(any(AnalysisTask.class));
         verify(mediaFileMapper, never()).selectById(any(Long.class));
     }
+
+    @Test
+    void consumeStartConvergesOntoWinnerRowWhenInsertRacesSubmit() {
+        // Local-queue delivery is millisecond-fast: CONSUME_START's SELECT misses the
+        // SUBMIT row (not yet committed), its INSERT hits the unique key. The write
+        // must converge onto the winning row instead of being swallowed — otherwise
+        // the ledger stays QUEUED and COMPLETE is later rejected as illegal.
+        AnalysisTask winner = row(9L, "QUEUED");
+        when(taskMapper.selectOne(any())).thenReturn(null, winner);
+        when(taskMapper.insert(any(AnalysisTask.class)))
+                .thenThrow(new RuntimeException("Duplicate entry '7-digest' for key 'analysis_tasks.uk_analysis_task_media'"));
+
+        service.onStarted(MEDIA_ID, USER_ID, HASH, GOAL, AnalysisMode.GENERAL, 1);
+
+        ArgumentCaptor<AnalysisTask> captor = ArgumentCaptor.forClass(AnalysisTask.class);
+        verify(taskMapper).updateById(captor.capture());
+        assertEquals(9L, captor.getValue().getId());
+        assertEquals("PROCESSING", captor.getValue().getState());
+    }
 }

@@ -170,7 +170,27 @@ public class AnalysisTaskService {
             row.setUpdatedAt(LocalDateTime.now());
             mutator.accept(row);
             if (row.getId() == null) {
-                taskMapper.insert(row);
+                try {
+                    taskMapper.insert(row);
+                } catch (RuntimeException e) {
+                    if (!isDuplicateKey(e)) throw e;
+                    // Race: the submit path inserts the row right as local-queue
+                    // consumption starts (delivery is millisecond-fast here), so the
+                    // SELECT above missed it and the INSERT hit the unique key. Losing
+                    // this write would strand the ledger (e.g. stuck in QUEUED, then
+                    // COMPLETE is rejected as an illegal transition). Re-read and
+                    // replay the event on the winning row instead.
+                    AnalysisTask winner = taskMapper.selectOne(new QueryWrapper<AnalysisTask>()
+                            .eq("media_id", mediaId)
+                            .eq("goal_digest", goalDigest));
+                    if (winner == null) throw e;
+                    TaskStatus.State racedFrom = parseState(winner.getState());
+                    winner.setContentHash(normalizedHash);
+                    winner.setState(AnalysisTaskStateMachine.next(racedFrom, event).name());
+                    winner.setUpdatedAt(LocalDateTime.now());
+                    mutator.accept(winner);
+                    taskMapper.updateById(winner);
+                }
             } else {
                 taskMapper.updateById(row);
             }
@@ -181,6 +201,11 @@ public class AnalysisTaskService {
         } catch (RuntimeException e) {
             log.warn("analysis_task_ledger_write_failed mediaId={} event={}", mediaId, event, e);
         }
+    }
+
+    private static boolean isDuplicateKey(RuntimeException e) {
+        String message = e.getMessage();
+        return message != null && message.contains("Duplicate entry");
     }
 
     private Long resolveOwner(Long mediaId, Long userIdHint) {
