@@ -336,4 +336,48 @@ class KnowledgeSourceServiceTest {
         media.setContentHash(hash);
         return media;
     }
+
+    @Test
+    void spaceCatchUpDispatchesOnlyPendingSources() {
+        KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
+        MediaFileMapper mediaMapper = mock(MediaFileMapper.class);
+        AnalysisDispatchService dispatchService = mock(AnalysisDispatchService.class);
+        KnowledgeSpaceService spaceService = mock(KnowledgeSpaceService.class);
+        KnowledgeSource pending1 = pendingSource(41L, 71L);
+        KnowledgeSource pending2 = pendingSource(42L, 72L);
+        when(sourceMapper.selectList(any())).thenReturn(List.of(pending1, pending2));
+        when(mediaMapper.selectById(71L)).thenReturn(media(71L));
+        // media 72 missing from the table: dispatch skips it instead of failing the batch
+        when(mediaMapper.selectById(72L)).thenReturn(null);
+
+        KnowledgeSourceService service = new KnowledgeSourceService(
+                sourceMapper, mock(KnowledgeSourceVersionMapper.class),
+                mock(KnowledgeSourceTagMapper.class), mediaMapper,
+                spaceService, mock(KnowledgeCollectionService.class),
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class), dispatchService);
+
+        int dispatched = service.dispatchPendingInSpace(7L, 5L);
+
+        assertEquals(1, dispatched);
+        verify(dispatchService).submit(any(MediaFile.class),
+                eq(KnowledgeSourceService.DEFAULT_ANALYSIS_GOAL), isNull(), any());
+        verify(spaceService).requireOwnedSpace(7L, 5L);
+    }
+
+    private KnowledgeSource pendingSource(Long id, Long mediaId) {
+        KnowledgeSource source = new KnowledgeSource();
+        source.setId(id);
+        source.setOwnerUserId(7L);
+        source.setMediaId(mediaId);
+        source.setSpaceId(5L);
+        source.setStatus(KnowledgeSourceService.STATUS_PENDING);
+        return source;
+    }
+
+    private MediaFile media(Long id) {
+        MediaFile media = new MediaFile();
+        media.setId(id);
+        media.setUserId(7L);
+        return media;
+    }
 }

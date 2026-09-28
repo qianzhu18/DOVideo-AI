@@ -206,6 +206,14 @@
                 <input v-model="tagFilter" maxlength="64" placeholder="按标签筛选" aria-label="按标签筛选" />
                 <button v-if="activeTag" type="button" class="tag-clear" aria-label="清除标签筛选" @click="clearTagFilter">×</button>
               </form>
+              <button
+                v-if="pendingCount > 0"
+                type="button"
+                class="subtle-button analyze-pending-button"
+                :disabled="dispatchingPending"
+                :title="'对空间里所有还没解析的视频启动转写与索引（ASR 免费计费项仅 LLM 摘要）'"
+                @click="analyzePending"
+              >{{ dispatchingPending ? '派发中…' : `解析未入库视频（${pendingCount}）` }}</button>
               <button type="button" class="subtle-button" :disabled="loading" @click="refreshCurrent">刷新</button>
             </div>
           </header>
@@ -414,6 +422,8 @@ const selectedSpaceId = ref(null)
 const selectedCollectionId = ref(null)
 const loading = ref(false)
 const saving = ref(false)
+const dispatchingPending = ref(false)
+const pendingCount = computed(() => sources.value.filter(source => source.status === 'PENDING').length)
 const error = ref('')
 const notice = ref('')
 const spaceComposerOpen = ref(false)
@@ -594,6 +604,25 @@ async function refreshCurrent() {
     error.value = cause.message || '无法读取当前目录'
   } finally {
     loading.value = false
+  }
+}
+
+async function analyzePending() {
+  if (!selectedSpaceId.value || dispatchingPending.value) return
+  dispatchingPending.value = true
+  error.value = ''
+  try {
+    const result = await request(`/knowledge/spaces/${selectedSpaceId.value}/analyze-pending`, {
+      method: 'POST',
+    })
+    notice.value = result?.dispatched > 0
+      ? `已派发 ${result.dispatched} 个视频进入解析队列（转写→索引，完成后卡片变 READY）`
+      : '没有需要解析的视频'
+    await refreshCurrent()
+  } catch (cause) {
+    error.value = cause.message || '批量解析派发失败'
+  } finally {
+    dispatchingPending.value = false
   }
 }
 

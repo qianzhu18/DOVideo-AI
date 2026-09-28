@@ -266,15 +266,42 @@ public class KnowledgeSourceService {
      */
     private void dispatchIfPending(KnowledgeSource source) {
         if (!STATUS_PENDING.equals(source.getStatus())) return;
+        dispatchPending(source, "filing");
+    }
+
+    /**
+     * Space-level catch-up for sources filed before auto-dispatch existed (or whose
+     * dispatch failed): starts the default analysis for every still-PENDING source in
+     * the space. Idempotent — submit deduplicates concurrent tasks and READY sources
+     * never re-enter the pipeline.
+     */
+    public int dispatchPendingInSpace(Long userId, Long spaceId) {
+        spaceService.requireOwnedSpace(userId, spaceId);
+        List<KnowledgeSource> pending = sourceMapper.selectList(new QueryWrapper<KnowledgeSource>()
+                .eq("owner_user_id", userId)
+                .eq("space_id", spaceId)
+                .eq("status", STATUS_PENDING));
+        int dispatched = 0;
+        for (KnowledgeSource source : pending) {
+            if (dispatchPending(source, "space-catch-up")) dispatched += 1;
+        }
+        auditService.record(userId, "SPACE_PENDING_DISPATCHED", "SPACE", spaceId, spaceId, null,
+                "pending=" + pending.size() + ";dispatched=" + dispatched);
+        return dispatched;
+    }
+
+    private boolean dispatchPending(KnowledgeSource source, String trigger) {
         try {
             MediaFile media = mediaFileMapper.selectById(source.getMediaId());
-            if (media == null) return;
+            if (media == null) return false;
             dispatchService.submit(media, DEFAULT_ANALYSIS_GOAL, null,
                     com.example.server.dto.AnalysisMode.GENERAL);
-            log.info("knowledge_filing_dispatched_analysis sourceId={} mediaId={}",
-                    source.getId(), source.getMediaId());
+            log.info("knowledge_filing_dispatched_analysis trigger={} sourceId={} mediaId={}",
+                    trigger, source.getId(), source.getMediaId());
+            return true;
         } catch (RuntimeException e) {
-            log.warn("knowledge_filing_dispatch_failed sourceId={}", source.getId(), e);
+            log.warn("knowledge_filing_dispatch_failed trigger={} sourceId={}", trigger, source.getId(), e);
+            return false;
         }
     }
 
