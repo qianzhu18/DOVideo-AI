@@ -61,6 +61,10 @@ public class KnowledgeSourceService {
     private final KnowledgeCollectionService collectionService;
     private final KnowledgeAuditService auditService;
     private final QdrantVectorStore vectorStore;
+    /** Filing an un-analyzed source into a space starts its analysis: entering the
+     *  knowledge base is the product's cue that this asset should become searchable. */
+    private final AnalysisDispatchService dispatchService;
+    static final String DEFAULT_ANALYSIS_GOAL = "理解视频核心内容并生成结构化分析报告";
 
     public KnowledgeSourceService(KnowledgeSourceMapper sourceMapper,
                                   KnowledgeSourceVersionMapper versionMapper,
@@ -69,7 +73,8 @@ public class KnowledgeSourceService {
                                   KnowledgeSpaceService spaceService,
                                   KnowledgeCollectionService collectionService,
                                   QdrantVectorStore vectorStore,
-                                  KnowledgeAuditService auditService) {
+                                  KnowledgeAuditService auditService,
+                                  @org.springframework.context.annotation.Lazy AnalysisDispatchService dispatchService) {
         this.sourceMapper = sourceMapper;
         this.versionMapper = versionMapper;
         this.tagMapper = tagMapper;
@@ -78,6 +83,7 @@ public class KnowledgeSourceService {
         this.collectionService = collectionService;
         this.vectorStore = vectorStore;
         this.auditService = auditService;
+        this.dispatchService = dispatchService;
     }
 
     @Transactional
@@ -246,9 +252,30 @@ public class KnowledgeSourceService {
                 .set("space_id", source.getSpaceId())
                 .set("collection_id", source.getCollectionId()));
         syncVectorLocation(source);
+        dispatchIfPending(source);
         auditService.record(userId, "SOURCE_MOVED", "SOURCE", source.getId(), source.getSpaceId(), source.getCollectionId(),
                 "fromSpace=" + previousSpaceId + ";fromCollection=" + previousCollectionId);
         return KnowledgeSourceView.from(source);
+    }
+
+    /**
+     * Filing a source that has no transcript yet (PENDING) auto-starts the default
+     * analysis, so "move into the knowledge base" is the single gesture that makes an
+     * uploaded video searchable. Best-effort: dispatch failure never blocks the move
+     * (the card's Video Agent button remains the manual start path).
+     */
+    private void dispatchIfPending(KnowledgeSource source) {
+        if (!STATUS_PENDING.equals(source.getStatus())) return;
+        try {
+            MediaFile media = mediaFileMapper.selectById(source.getMediaId());
+            if (media == null) return;
+            dispatchService.submit(media, DEFAULT_ANALYSIS_GOAL, null,
+                    com.example.server.dto.AnalysisMode.GENERAL);
+            log.info("knowledge_filing_dispatched_analysis sourceId={} mediaId={}",
+                    source.getId(), source.getMediaId());
+        } catch (RuntimeException e) {
+            log.warn("knowledge_filing_dispatch_failed sourceId={}", source.getId(), e);
+        }
     }
 
     /**

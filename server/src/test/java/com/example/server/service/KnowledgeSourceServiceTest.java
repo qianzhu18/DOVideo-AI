@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -53,7 +54,8 @@ class KnowledgeSourceServiceTest {
 
         KnowledgeSourceService service = new KnowledgeSourceService(
                 sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
-                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class));
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class),
+                mock(AnalysisDispatchService.class));
         KnowledgeSource source = service.ensureMediaSource(media(9L, 7L, "jvm.mp4", "aabb"));
 
         assertEquals(21L, source.getId());
@@ -84,7 +86,8 @@ class KnowledgeSourceServiceTest {
 
         KnowledgeSourceService service = new KnowledgeSourceService(
                 sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
-                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class));
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class),
+                mock(AnalysisDispatchService.class));
         KnowledgeSourceView moved = service.move(7L, 21L, new KnowledgeSourceLocationRequest(5L, 31L));
 
         assertEquals(5L, moved.spaceId());
@@ -113,13 +116,64 @@ class KnowledgeSourceServiceTest {
 
         KnowledgeSourceService service = new KnowledgeSourceService(
                 sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
-                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class));
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class),
+                mock(AnalysisDispatchService.class));
         KnowledgeSourceView moved = service.move(7L, 21L, new KnowledgeSourceLocationRequest(5L, null));
 
         assertEquals(5L, moved.spaceId());
         assertNull(moved.collectionId());
         verify(sourceMapper).update(isNull(), any(UpdateWrapper.class));
         verify(sourceMapper, never()).updateById(any(KnowledgeSource.class));
+    }
+
+    @Test
+    void filingAPendingSourceAutoStartsDefaultAnalysis() {
+        KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
+        MediaFileMapper mediaMapper = mock(MediaFileMapper.class);
+        AnalysisDispatchService dispatchService = mock(AnalysisDispatchService.class);
+        KnowledgeSource source = new KnowledgeSource();
+        source.setId(21L);
+        source.setOwnerUserId(7L);
+        source.setMediaId(66L);
+        source.setSpaceId(3L);
+        source.setStatus(KnowledgeSourceService.STATUS_PENDING);
+        when(sourceMapper.selectById(21L)).thenReturn(source);
+        MediaFile media = new MediaFile();
+        media.setId(66L);
+        media.setUserId(7L);
+        when(mediaMapper.selectById(66L)).thenReturn(media);
+
+        KnowledgeSourceService service = new KnowledgeSourceService(
+                sourceMapper, mock(KnowledgeSourceVersionMapper.class),
+                mock(KnowledgeSourceTagMapper.class), mediaMapper,
+                mock(KnowledgeSpaceService.class), mock(KnowledgeCollectionService.class),
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class), dispatchService);
+        service.move(7L, 21L, new KnowledgeSourceLocationRequest(5L, null));
+
+        verify(dispatchService).submit(eq(media), eq(KnowledgeSourceService.DEFAULT_ANALYSIS_GOAL),
+                isNull(), eq(com.example.server.dto.AnalysisMode.GENERAL));
+    }
+
+    @Test
+    void filingAnAnalyzedSourceDoesNotRedispatch() {
+        KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
+        AnalysisDispatchService dispatchService = mock(AnalysisDispatchService.class);
+        KnowledgeSource source = new KnowledgeSource();
+        source.setId(21L);
+        source.setOwnerUserId(7L);
+        source.setMediaId(66L);
+        source.setSpaceId(3L);
+        source.setStatus(KnowledgeSourceService.STATUS_READY);
+        when(sourceMapper.selectById(21L)).thenReturn(source);
+
+        KnowledgeSourceService service = new KnowledgeSourceService(
+                sourceMapper, mock(KnowledgeSourceVersionMapper.class),
+                mock(KnowledgeSourceTagMapper.class), mock(MediaFileMapper.class),
+                mock(KnowledgeSpaceService.class), mock(KnowledgeCollectionService.class),
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class), dispatchService);
+        service.move(7L, 21L, new KnowledgeSourceLocationRequest(5L, null));
+
+        verify(dispatchService, never()).submit(any(), org.mockito.ArgumentMatchers.anyString(), any(), any());
     }
 
     @Test
@@ -136,7 +190,8 @@ class KnowledgeSourceServiceTest {
 
         KnowledgeSourceService service = new KnowledgeSourceService(
                 sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
-                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class));
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class),
+                mock(AnalysisDispatchService.class));
         KnowledgeSourceView result = service.replaceTags(
                 7L, 21L, new KnowledgeSourceTagsRequest(List.of(" JVM ", "", "JVM")));
 
@@ -159,7 +214,8 @@ class KnowledgeSourceServiceTest {
 
         KnowledgeSourceService service = new KnowledgeSourceService(
                 sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
-                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class));
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class),
+                mock(AnalysisDispatchService.class));
         KnowledgeSourceView result = service.replaceTags(
                 7L, 21L, new KnowledgeSourceTagsRequest(List.of("GC", "面试")));
 
@@ -182,7 +238,8 @@ class KnowledgeSourceServiceTest {
 
         KnowledgeSourceService service = new KnowledgeSourceService(
                 sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
-                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class));
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class),
+                mock(AnalysisDispatchService.class));
         KnowledgeSourceView result = service.replaceTags(
                 7L, 21L, new KnowledgeSourceTagsRequest(List.of("面试", "GC")));
 
@@ -205,7 +262,8 @@ class KnowledgeSourceServiceTest {
 
         KnowledgeSourceService service = new KnowledgeSourceService(
                 sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
-                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class));
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class),
+                mock(AnalysisDispatchService.class));
         List<KnowledgeSourceView> result = service.list(7L, 3L, null, "missing-tag");
 
         assertTrue(result.isEmpty());
@@ -228,7 +286,8 @@ class KnowledgeSourceServiceTest {
 
         KnowledgeSourceService service = new KnowledgeSourceService(
                 sourceMapper, versionMapper, tagMapper, mediaMapper, spaceService, collectionService,
-                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class));
+                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class),
+                mock(AnalysisDispatchService.class));
         List<KnowledgeSourceView> result = service.list(7L, 3L, null, "面试");
 
         assertEquals(1, result.size());
