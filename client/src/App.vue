@@ -766,7 +766,9 @@ const runUploadQueue = async () => {
         break
       } else {
         item.status = 'failed'
-        item.message = result.error?.message || '上传失败'
+        item.message = isBatch
+          ? `此视频失败，已跳过并继续队列：${result.error?.message || '上传失败'}`
+          : (result.error?.message || '上传失败')
         failed += 1
       }
     }
@@ -1583,6 +1585,7 @@ html, body, #app {
   transition: all 0.3s;
 }
 .upload-magnet:hover { border-color: var(--accent-lime); box-shadow: var(--shadow-glow-lime); transform: translateY(-5px); }
+.upload-magnet.processing { height: auto; min-height: 300px; overflow: visible; }
 
 /* 容器布局 */
 .split-container {
@@ -1648,7 +1651,8 @@ html, body, #app {
 
 /* 处理中状态 */
 .magnet-content.busy {
-  height: 100%; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  min-height: 300px; height: auto; width: 100%; padding: 24px 12px; box-sizing: border-box;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
   background: var(--bg-card); position: relative; z-index: 50;
 }
 .busy-text { margin-top: 15px; color: var(--accent-lime); font-family: monospace; animation: pulse-lime 2s infinite; }
@@ -1720,7 +1724,7 @@ html, body, #app {
 .dock-item.ai-core:hover:not(:disabled) .item-sub { color: var(--text-inverse); }
 
 /* Sidebar */
-.sidebar-backdrop { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); z-index: 998; }
+.sidebar-backdrop { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 998; }
 .sidebar-panel { position: fixed; top: 0; right: -920px; width: 880px; max-width: calc(100vw - 24px); height: 100%; background: var(--bg-card); border-left: 2px solid var(--accent-lime); z-index: 999; transition: right 0.4s cubic-bezier(0.19, 1, 0.22, 1); display: flex; flex-direction: column; box-shadow: -10px 0 40px rgba(0,0,0,0.8); }
 .sidebar-panel.is-open { right: 0; }
 .sidebar-header { padding: 20px 30px; border-bottom: 1px solid var(--border-tech); display: flex; justify-content: space-between; align-items: center; background: rgba(11, 12, 16, 0.9); }
@@ -1833,7 +1837,7 @@ html, body, #app {
 .feedback-row { display: flex; align-items: center; gap: 8px; margin-top: 18px; color: var(--text-sub); font-size: 0.85rem; }
 
 /* 登录框 */
-.auth-backdrop { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); backdrop-filter: blur(5px); z-index: 2000; display: flex; justify-content: center; align-items: center; }
+.auth-backdrop { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 2000; display: flex; justify-content: center; align-items: center; }
 .auth-panel { width: 400px; max-width: 90vw; background: var(--bg-card); border: 1px solid var(--border-tech); border-top: 2px solid var(--accent-lime); box-shadow: 0 20px 50px rgba(0,0,0,0.8); display: flex; flex-direction: column; animation: slideUpFade 0.3s forwards; }
 .auth-header { padding: 20px; border-bottom: 1px solid var(--border-tech); display: flex; justify-content: space-between; align-items: center; background: rgba(11,12,16,0.9); }
 .auth-title { font-family: 'Noto Sans SC', sans-serif; font-size: 1.2rem; color: var(--text-main); font-weight: 700; letter-spacing: 1px; }
