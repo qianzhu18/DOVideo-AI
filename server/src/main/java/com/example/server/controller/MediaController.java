@@ -62,6 +62,22 @@ public class MediaController {
         return Result.ok(chunkUploadService.uploadedChunks(uploadId, userId));
     }
 
+    /**
+     * Checks only the authenticated user's existing media. The client uses this before
+     * creating an upload session; completeUpload still recalculates and verifies the
+     * hash server-side, so this lookup is an optimization rather than a trust boundary.
+     */
+    @GetMapping("/duplicate")
+    public Result<MediaSummary> findDuplicate(
+            @RequestParam String contentHash,
+            @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId) {
+        if (contentHash == null || !contentHash.matches("(?i)[0-9a-f]{32}")) {
+            throw new IllegalArgumentException("contentHash must be a 32-character MD5 hex string");
+        }
+        MediaFile existing = mediaService.findDuplicateByContent(userId, contentHash.toLowerCase(java.util.Locale.ROOT));
+        return Result.ok(existing == null ? null : MediaSummary.from(existing));
+    }
+
     @PostMapping("/upload-chunk")
     public Result<Void> uploadChunk(@RequestParam String uploadId,
                                     @RequestParam int chunkIndex,
