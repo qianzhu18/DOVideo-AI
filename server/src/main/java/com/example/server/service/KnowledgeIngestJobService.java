@@ -13,7 +13,6 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
 import java.util.List;
 
 @Service
@@ -44,7 +43,7 @@ public class KnowledgeIngestJobService {
             catch (RuntimeException e) {
                 jobs.update(null, new UpdateWrapper<KnowledgeIngestJob>().eq("id", job.getId()).eq("state", "QUEUED")
                         .set("error_message", "消息投递失败，等待自动重试")
-                        .set("next_dispatch_at", LocalDateTime.now().plusSeconds(10)));
+                        .setSql("next_dispatch_at = TIMESTAMPADD(SECOND, 10, CURRENT_TIMESTAMP(3))"));
                 log.warn("knowledge_ingest_dispatch_failed jobId={}", job.getId(), e);
             }
         }
@@ -65,6 +64,6 @@ public class KnowledgeIngestJobService {
                 .eq("source_id", sourceId).in("state", "FAILED", "READY")
                 .set("state", "QUEUED").set("stage", "QUEUED").set("attempt_count", 0)
                 .set("force_rebuild", true)
-                .set("error_message", null).set("next_dispatch_at", LocalDateTime.now())) > 0;
+                .set("error_message", null).setSql("next_dispatch_at = CURRENT_TIMESTAMP(3)")) > 0;
     }
 }

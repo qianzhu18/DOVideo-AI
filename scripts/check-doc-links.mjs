@@ -91,7 +91,10 @@ for (const markdownFile of listMarkdownFiles(docsRoot)) {
   const content = fs.readFileSync(markdownFile, 'utf8');
   if (!includeReference && !isActiveDocument(content)) continue;
   const linkPattern = /!?\[[^\]]*\]\(([^)]+)\)/g;
-  for (const match of content.matchAll(linkPattern)) {
+  // Code examples are not document navigation; preserve offsets for diagnostics.
+  const prose = content.replace(/^(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, m => m.replace(/[^\n]/g, ' '))
+    .replace(/(`+)([\s\S]*?)\1/g, m => m.replace(/[^\n]/g, ' '));
+  for (const match of prose.matchAll(linkPattern)) {
     const target = localTarget(match[1]);
     if ((!target.fileTarget && !target.anchorTarget) || targetIsExternal(target.fileTarget)) continue;
     checkedLinks += 1;

@@ -168,12 +168,12 @@ class FailedAnalysisTaskServiceTest {
     }
 
     private static String activeKey() {
-        return com.example.server.utils.AnalysisTaskKeys.active(HASH,
+        return com.example.server.utils.AnalysisTaskKeys.active("media-7",
                 com.example.server.utils.AnalysisTaskKeys.goalDigest(GOAL, null));
     }
 
     private static String attemptsKey() {
-        return com.example.server.utils.AnalysisTaskKeys.attempts(HASH,
+        return com.example.server.utils.AnalysisTaskKeys.attempts("media-7",
                 com.example.server.utils.AnalysisTaskKeys.goalDigest(GOAL, null));
     }
 }

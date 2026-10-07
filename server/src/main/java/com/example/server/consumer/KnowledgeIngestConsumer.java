@@ -11,7 +11,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import java.time.LocalDateTime;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Component
@@ -73,6 +72,6 @@ public class KnowledgeIngestConsumer implements RocketMQListener<Long> {
         jobs.update(null, new UpdateWrapper<KnowledgeIngestJob>().eq("id", job.getId())
                 .eq("state", "PROCESSING").eq("attempt_count", job.getAttemptCount())
                 .set("state", state).set("stage", stage).set("error_message", error)
-                .set("next_dispatch_at", LocalDateTime.now().plusSeconds(30)));
+                .setSql("next_dispatch_at = TIMESTAMPADD(SECOND, 30, CURRENT_TIMESTAMP(3))"));
     }
 }

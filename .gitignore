@@ -16,3 +16,5 @@ qdrant/data/
 minio/data/
 server/data/muku-batches/
  
+
+__pycache__/

@@ -63,3 +63,5 @@ MCP 提供五个只读工具：`list_knowledge_spaces`、`get_knowledge_catalog`
 ## License
 
 [MIT](LICENSE)
+
+浏览器扩展的安装与使用见 [扩展说明](extension/README.md)。

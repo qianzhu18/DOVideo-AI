@@ -74,6 +74,7 @@ class VideoAnalysisConsumerTest {
     @BeforeEach
     void setUp() {
         when(redissonClient.getLock(anyString())).thenReturn(lock);
+        when(redissonClient.getLock(AnalysisTaskKeys.lock(HASH, AnalysisTaskKeys.goalDigest(GOAL, AnalysisMode.GENERAL)))).thenReturn(mock(RLock.class));
         when(lock.tryLock()).thenReturn(true);
         when(lock.isHeldByCurrentThread()).thenReturn(true);
         when(redisTemplate.opsForValue()).thenReturn(valueOps);
@@ -226,7 +227,7 @@ class VideoAnalysisConsumerTest {
         // The branch that matters renews the active key specifically (the
         // attempts-key renewal is routine and counted separately).
         verify(redisTemplate).expire(
-                eq(AnalysisTaskKeys.active(HASH,
+                eq(AnalysisTaskKeys.active(AnalysisTaskKeys.mediaScope(MEDIA_ID),
                         AnalysisTaskKeys.goalDigest(GOAL, AnalysisMode.GENERAL))),
                 eq(Duration.ofHours(6)));
         // Idempotency keys must survive the retry window, or the frontend would

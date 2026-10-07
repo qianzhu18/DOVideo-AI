@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real MCP -> authenticated isolated backend -> catalog/Qdrant smoke test; synthetic AI."""
 import json
+import os
 from pathlib import Path
 import urllib.error
 import urllib.request
@@ -9,7 +10,7 @@ from architecture_smoke import api
 
 def main():
     fixture = json.loads(Path('/tmp/videoagent-architecture-fixture-session.json').read_text())
-    report = json.loads((Path(__file__).parent / 'reports/architecture-smoke-20261007.json').read_text())
+    report = json.loads((Path(__file__).parent / f'reports/architecture-smoke-{os.environ.get("FIXTURE_REPORT_DATE", "20261008")}.json').read_text())
     scope = report['ui_fixture']
     token = fixture['token']
     second = api('/knowledge/spaces', token, 'POST', {'name': '全栈学习-' + uuid.uuid4().hex[:6]})['id']
@@ -42,7 +43,7 @@ def main():
     try: rpc('tools/list', credential='unauthorized-fixture-client')
     except urllib.error.HTTPError as error: check('unknown MCP client rejected', error.code == 401)
     else: raise AssertionError('unknown MCP client accepted')
-    target = Path(__file__).parent / 'reports/mcp-architecture-smoke-20261007.json'
+    target = Path(__file__).parent / f'reports/mcp-architecture-smoke-{os.environ.get("FIXTURE_REPORT_DATE", "20261008")}.json'
     target.write_text(json.dumps({'fixture': report['fixture'], 'production_quality_claim': False, 'checks': checks}, ensure_ascii=False, indent=2))
     print(json.dumps({'passed': len(checks), 'report': str(target)}, ensure_ascii=False))
 

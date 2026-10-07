@@ -302,7 +302,11 @@
               <li v-for="hit in searchResults" :key="hit.segmentId" class="search-hit">
                 <div class="search-hit-meta">
                   <strong :title="hit.title">{{ hit.title }}</strong>
-                  <span class="search-hit-time">{{ formatMs(hit.startMs) }} – {{ formatMs(hit.endMs) }}</span>
+                  <button v-if="hit.mediaId" type="button" class="search-hit-time"
+                    :aria-label="`回看 ${hit.title} ${formatMs(hit.startMs)}`"
+                    @click="$emit('open-evidence', { mediaId: hit.mediaId, timestampMs: hit.startMs })"
+                  >{{ formatMs(hit.startMs) }} – {{ formatMs(hit.endMs) }}</button>
+                  <span v-else class="search-hit-time">{{ formatMs(hit.startMs) }} – {{ formatMs(hit.endMs) }}</span>
                   <span class="search-hit-kind">{{ hit.sourceType === 'SCRIPT' ? '脚本' : '视频' }}·{{ ({ vector: '语义', keyword: '关键词', hybrid: '混合检索' })[hit.matchType] || hit.matchType }}</span>
                 </div>
                 <p>{{ hit.transcript || hit.ocrText || hit.summary }}</p>
@@ -1452,6 +1456,7 @@ function formatDate(value) {
 .search-hit-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px; margin-bottom: 6px; }
 .search-hit-meta strong { overflow: hidden; max-width: 340px; text-overflow: ellipsis; white-space: nowrap; font-size: .82rem; }
 .search-hit-time { color: var(--accent-lime); font: .7rem/1 monospace; }
+button.search-hit-time { border: 0; background: transparent; padding: 4px; cursor: pointer; text-decoration: underline; }
 .search-hit-kind { padding: 2px 6px; border: 1px solid rgba(197,249,70,.35); color: var(--text-sub); font: .62rem/1.2 monospace; }
 .search-hit p { margin: 0; color: var(--text-sub); font-size: .8rem; line-height: 1.7; }
 .ingest-error { margin: 6px 0 0; color: #ff6876; font: .65rem/1.4 monospace; }

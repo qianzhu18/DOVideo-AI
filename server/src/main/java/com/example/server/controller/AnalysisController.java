@@ -8,6 +8,7 @@ import com.example.server.dto.AnalysisMode;
 import com.example.server.dto.RouteDecision;
 import com.example.server.dto.RouteRequest;
 import com.example.server.dto.TaskStatus;
+import com.example.server.dto.TaskEvent;
 import com.example.server.dto.VideoEvidenceHit;
 import com.example.server.entity.MediaFile;
 import com.example.server.exception.BusinessException;
@@ -166,8 +167,10 @@ public class AnalysisController {
         ensureRating(feedback);
         MediaFile mediaFile = mediaService.requireOwnedMedia(feedback.mediaId(), userId);
         String revisedGoal = aiService.revisionGoal(feedback);
+        AnalysisMode analysisMode = AnalysisMode.fromRequest(
+                mode == null || mode.isBlank() ? feedback.mode() : mode);
         return submissionResponse(
-                dispatchService.submit(mediaFile, revisedGoal, feedback, AnalysisMode.fromRequest(mode)));
+                dispatchService.submit(mediaFile, revisedGoal, feedback, analysisMode));
     }
 
     @GetMapping("/agent-feedback")
@@ -214,8 +217,8 @@ public class AnalysisController {
                 TaskEventService.ANALYSIS,
                 normalizedGoal,
                 analysisMode,
-                statusService.current(id, normalizedGoal, analysisMode),
-                statusService.stage(id, normalizedGoal, analysisMode));
+                () -> TaskEvent.of(statusService.current(id, normalizedGoal, analysisMode),
+                        statusService.stage(id, normalizedGoal, analysisMode)));
     }
 
     @GetMapping("/agent-evaluation")

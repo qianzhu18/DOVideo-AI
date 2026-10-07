@@ -68,7 +68,7 @@ class AnalysisDispatchServiceTest {
         mediaFile = new MediaFile();
         mediaFile.setId(MEDIA_ID);
         mediaFile.setUserId(USER_ID);
-        activeKey = AnalysisTaskKeys.active(HASH,
+        activeKey = AnalysisTaskKeys.active(AnalysisTaskKeys.mediaScope(MEDIA_ID),
                 AnalysisTaskKeys.goalDigest(GOAL, AnalysisMode.GENERAL));
         service = new AnalysisDispatchService(aiService, mediaService, redisTemplate,
                 rocketMQTemplate, redissonClient, taskEventService, taskLedger,
@@ -99,27 +99,19 @@ class AnalysisDispatchServiceTest {
         assertEquals(AnalysisDispatchService.SubmissionResult.DUPLICATE,
                 service.submit(mediaFile, GOAL, null, AnalysisMode.GENERAL));
 
-        verify(taskLedger).hasActiveTask(MEDIA_ID);
+        verify(taskLedger, never()).hasActiveTask(MEDIA_ID);
         verify(redisTemplate, never()).delete(anyString());
         verify(rocketMQTemplate, never()).convertAndSend(anyString(), any(Object.class));
     }
 
     @Test
-    void staleActiveMarkerIsClearedWhenLedgerShowsNoTaskInFlight() {
-        // 进程死亡会把 active 标记残留最多 6 小时(且键按内容哈希共享,一个用户的
-        // 残留会挡住另一用户同内容视频的投递)。台账没有在跑记录时,标记就是幽灵:
-        // 清掉并照常受理,而不是把内容锁死。
-        when(valueOps.setIfAbsent(anyString(), anyString(), eq(Duration.ofHours(6))))
-                .thenReturn(false, true);
+    void absentLedgerCannotInvalidateAConcurrentlySubmittedActiveMarker() {
+        when(valueOps.setIfAbsent(anyString(), anyString(), eq(Duration.ofHours(6)))).thenReturn(false);
         when(taskLedger.hasActiveTask(MEDIA_ID)).thenReturn(false);
-        when(redisTemplate.delete(activeKey)).thenReturn(true);
-
-        assertEquals(AnalysisDispatchService.SubmissionResult.ACCEPTED,
+        assertEquals(AnalysisDispatchService.SubmissionResult.DUPLICATE,
                 service.submit(mediaFile, GOAL, null, AnalysisMode.GENERAL));
-
-        verify(redisTemplate).delete(activeKey);
-        verify(rocketMQTemplate).convertAndSend(eq("video-analysis-topic"), any(Object.class));
-        verify(taskLedger).onSubmitted(MEDIA_ID, USER_ID, HASH, GOAL, AnalysisMode.GENERAL);
+        verify(redisTemplate, never()).delete(anyString());
+        verify(rocketMQTemplate, never()).convertAndSend(anyString(), any(Object.class));
     }
 
     @Test

@@ -16,6 +16,7 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /** Controlled agent orchestrator: restore state, run one analysis round, verify evidence, then decide to finish or revise. */
 @Service
@@ -91,8 +92,15 @@ public class AgentLoopService {
      */
     public AgentState run(Long mediaId, VideoContext context, ModeProfile profile) {
         validateContext(context);
+        return executeWithinBudget(() -> runWithinBudget(mediaId, context, profile));
+    }
+
+    /**
+     * 让追问检索等 Agent 前置步骤与主循环共享同一个截止时间；嵌套调用会继承更早的 deadline。
+     */
+    public <T> T executeWithinBudget(Supplier<T> action) {
         try (AgentExecutionBudget.Scope ignored = AgentExecutionBudget.open(maxDurationMs)) {
-            return runWithinBudget(mediaId, context, profile);
+            return action.get();
         } catch (BudgetExceededException e) {
             throw e;
         } catch (RuntimeException e) {

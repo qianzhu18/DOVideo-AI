@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
-import { apiRequest } from './api'
-import { DEMO_EVALUATION, DEMO_ITEM, DEMO_PLAN, DEMO_RESULT, DEMO_TRACE } from './demoData'
-import { renderMarkdown } from './markdown'
+import { apiRequest, captureAuthSession } from './api.js'
+import { DEMO_EVALUATION, DEMO_ITEM, DEMO_PLAN, DEMO_RESULT, DEMO_TRACE } from './demoData.js'
+import { renderMarkdown } from './markdown.js'
 
 // 与后端 MediaController.DEFAULT_ANALYSIS_GOAL 保持一致：上传即自动派发的任务身份必须同源，
 // 否则面板会以另一个 goal 再提交一遍（同视频双跑）。
@@ -87,6 +87,16 @@ export function useAnalysisWorkspace({
 }) {
   const sidebar = ref(createSidebarState())
   let evidenceRequestVersion = 0
+  let historyRequestVersion = 0
+  let metadataRequestVersion = 0
+  // Keep a generation for view reuse: the same video/goal can be opened twice
+  // while an earlier request is still in flight.
+  let workspaceVersion = 0
+  const captureWorkspace = () => {
+    const version = workspaceVersion
+    const isCurrentSession = captureAuthSession()
+    return () => version === workspaceVersion && isCurrentSession()
+  }
   const traceStages = computed(() => Object.entries(sidebar.value.trace?.stageDurationMs || {})
     .map(([stage, duration]) => [STAGE_LABELS[stage] || stage, formatDuration(duration)]))
   const renderedMarkdown = computed(() => renderMarkdown(sidebar.value.content))
@@ -96,6 +106,8 @@ export function useAnalysisWorkspace({
     && (analysisMode === null || sidebar.value.analysisMode === analysisMode)
 
   const openSidebar = (type, title) => {
+    workspaceVersion += 1
+    historyRequestVersion += 1
     sidebar.value.visible = true
     sidebar.value.type = type
     sidebar.value.title = title
@@ -115,28 +127,33 @@ export function useAnalysisWorkspace({
       saveModeDraft(sidebar.value.mediaId, sidebar.value.analysisMode)
     }
     evidenceRequestVersion += 1
+    historyRequestVersion += 1
+    sidebar.value.evidenceLoading = false
     sidebar.value.visible = false
   }
 
   const loadPlayback = async id => {
+    const panel = sidebar.value
+    const isCurrentSession = captureAuthSession()
+    const isCurrent = () => sidebar.value === panel && isCurrentSession()
     sidebar.value.playbackLoading = true
     sidebar.value.playbackError = ''
     try {
       const response = await apiRequest(`/media/playback?id=${id}`)
       const url = await response.text()
       if (!response.ok) throw new Error(url || '视频加载失败')
-      if (sidebar.value.mediaId === id) {
+      if (isCurrent() && sidebar.value.mediaId === id) {
         sidebar.value.playbackUrl = url
         sidebar.value.playbackError = ''
       }
     } catch (error) {
       console.warn('Video preview unavailable', error)
-      if (sidebar.value.mediaId === id) {
+      if (isCurrent() && sidebar.value.mediaId === id) {
         sidebar.value.playbackUrl = ''
         sidebar.value.playbackError = error.message || '原视频暂时无法加载'
       }
     } finally {
-      if (sidebar.value.mediaId === id) sidebar.value.playbackLoading = false
+      if (isCurrent() && sidebar.value.mediaId === id) sidebar.value.playbackLoading = false
     }
   }
 
@@ -146,6 +163,8 @@ export function useAnalysisWorkspace({
     includeEvaluation,
     analysisMode = sidebar.value.analysisMode || 'GENERAL'
   ) => {
+    const isCurrent = captureWorkspace()
+    const version = ++metadataRequestVersion
     const params = new URLSearchParams({ id: String(id), goal, mode: analysisMode })
     const requests = [
       apiRequest(`/analysis/agent-plan?${params}`),
@@ -154,20 +173,24 @@ export function useAnalysisWorkspace({
     if (includeEvaluation) requests.push(apiRequest(`/analysis/agent-evaluation?${params}`))
 
     const settled = await Promise.allSettled(requests)
-    if (!isCurrentWorkspace(id, 'ai', goal, analysisMode)) return
     const [plan, trace, evaluation] = await Promise.all(settled.map(readSettledJson))
+    if (!isCurrent() || version !== metadataRequestVersion
+      || !isCurrentWorkspace(id, 'ai', goal, analysisMode)) return
     if (plan && !sidebar.value.editingPlan) sidebar.value.plan = plan
     if (trace) sidebar.value.trace = trace
     if (includeEvaluation && evaluation) sidebar.value.evaluation = evaluation
   }
 
   const startTaskStream = (id, type, goal = '', analysisMode = 'GENERAL') => {
+    const isCurrentSession = captureAuthSession()
     const resolvedMode = analysisMode || 'GENERAL'
     const scope = type === 'ai' ? analysisScope(goal, resolvedMode) : ''
-    const isCurrentTask = () => isCurrentWorkspace(
+    const isCurrentTask = () => isCurrentSession() && isCurrentWorkspace(
       id, type, type === 'ai' ? goal : null, type === 'ai' ? resolvedMode : null)
+      && (type !== 'ai' || sidebar.value.mode === 'result')
     const taskLabel = type === 'ai' ? 'AI 分析' : '文字提取'
-    const finish = async (result, failed = false) => {
+    const finish = async (result, failed = false, signal) => {
+      if (!isCurrentSession() || signal?.aborted) return
       const watching = sidebar.value.visible && isCurrentTask()
       if (watching) {
         sidebar.value.content = failed ? '' : result
@@ -179,6 +202,7 @@ export function useAnalysisWorkspace({
         if (failed && type === 'ai') sidebar.value.mode = 'compose'
         if (type === 'ai' && !failed) await refreshAgentMeta(id, goal, true, resolvedMode)
       }
+      if (!isCurrentSession() || signal?.aborted) return
       // 用户可能已经关掉面板去看别的视频，带上文件名才知道是哪个任务结束了。
       const filename = watching ? '' : findMediaItem(id)?.filename || ''
       const suffix = filename ? ` · ${filename}` : ''
@@ -188,7 +212,6 @@ export function useAnalysisWorkspace({
           : `${taskLabel}完成${suffix}`,
         failed
       )
-      taskStreams.stop(id, type, scope)
     }
 
     const params = new URLSearchParams({ id: String(id) })
@@ -200,7 +223,8 @@ export function useAnalysisWorkspace({
       ? `/analysis/analysis-events?${params}`
       : `/analysis/transcription-events?${params}`
 
-    taskStreams.start(id, type, scope, path, async status => {
+    taskStreams.start(id, type, scope, path, async (status, signal) => {
+      if (!isCurrentSession() || signal?.aborted) return
       if (isCurrentTask()) {
         // 收到任何事件都说明连接是通的，先把“重连中”提示撤掉。
         sidebar.value.streamOffline = false
@@ -209,14 +233,15 @@ export function useAnalysisWorkspace({
           sidebar.value.statusMessage = status.message
         }
       }
-      if (type === 'ai' && status.stage && isCurrentTask()) {
+      if (type === 'ai' && status.stage && status.state !== 'COMPLETED' && isCurrentTask()) {
         await refreshAgentMeta(id, goal, false, resolvedMode)
       }
+      if (!isCurrentSession() || signal?.aborted) return
       if (status.state === 'COMPLETED') {
         await refreshMediaList()
-        await finish(status.result || (type === 'ai' ? '分析完成' : ''))
+        await finish(status.result || (type === 'ai' ? '分析完成' : ''), false, signal)
       } else if (status.state === 'FAILED') {
-        await finish(status.message || '任务执行失败', true)
+        await finish(status.message || '任务执行失败', true, signal)
       }
     }, (error, attempt, terminal = false) => {
       // isCurrentTask 保证用户已切换视频或关闭面板时，旧任务的错误不会写到新页面上。
@@ -227,6 +252,8 @@ export function useAnalysisWorkspace({
         sidebar.value.streamRetry = 0
         sidebar.value.loading = false
         sidebar.value.error = error?.message || '任务事件流已断开，请稍后重试'
+        sidebar.value.statusMessage = ''
+        if (type === 'ai') sidebar.value.mode = 'compose'
         return
       }
       console.warn('task event stream reconnecting', error)
@@ -254,13 +281,16 @@ export function useAnalysisWorkspace({
 
     openSidebar('text', panelTitle)
     sidebar.value.mediaId = id
+    const isCurrent = captureWorkspace()
+    const isCurrentSession = captureAuthSession()
     sidebar.value.statusMessage = '提取任务已提交，正在识别语音'
     try {
       const current = await apiRequest(`/analysis/transcription-status?id=${id}`)
       if (!current.ok) throw new Error(await current.text())
       const currentStatus = await current.json()
+      if (!isCurrentSession()) return
       if (currentStatus.state === 'COMPLETED') {
-        if (isCurrentWorkspace(id, 'text')) {
+        if (isCurrent() && isCurrentWorkspace(id, 'text')) {
           sidebar.value.content = currentStatus.result || ''
           sidebar.value.statusMessage = ''
           sidebar.value.loading = false
@@ -268,7 +298,7 @@ export function useAnalysisWorkspace({
         return
       }
       if (currentStatus.state === 'QUEUED' || currentStatus.state === 'PROCESSING') {
-        if (isCurrentWorkspace(id, 'text') && currentStatus.message) {
+        if (isCurrent() && isCurrentWorkspace(id, 'text') && currentStatus.message) {
           sidebar.value.statusMessage = currentStatus.message
         }
         startTaskStream(id, 'text')
@@ -276,9 +306,10 @@ export function useAnalysisWorkspace({
       }
       const response = await apiRequest(`/analysis/transcribe?id=${id}`, { method: 'POST' })
       if (!response.ok) throw new Error(await response.text())
+      if (!isCurrentSession()) return
       startTaskStream(id, 'text')
     } catch (error) {
-      if (isCurrentWorkspace(id, 'text')) {
+      if (isCurrent() && isCurrentWorkspace(id, 'text')) {
         sidebar.value.content = ''
         sidebar.value.statusMessage = ''
         sidebar.value.error = error.message || '文字提取失败，请稍后重试'
@@ -288,6 +319,8 @@ export function useAnalysisWorkspace({
   }
 
   const analyze = async (id, goal, mode = 'GENERAL') => {
+    const isCurrentSession = captureAuthSession()
+    const isCurrent = captureWorkspace()
     const resolvedMode = mode || 'GENERAL'
     const scope = analysisScope(goal, resolvedMode)
     if (taskStreams.has(id, 'ai', scope)) {
@@ -307,13 +340,14 @@ export function useAnalysisWorkspace({
       const params = new URLSearchParams({ id: String(id), goal, mode: resolvedMode })
       const response = await apiRequest(`/analysis/ai?${params}`, { method: 'POST' })
       const message = await response.text()
+      if (!isCurrentSession()) return
       if (response.status === 409) {
         startTaskStream(id, 'ai', goal, resolvedMode)
         refreshAgentMeta(id, goal, false, resolvedMode)
         return
       }
       if (!response.ok) {
-        if (isCurrentWorkspace(id, 'ai', goal, resolvedMode)) {
+        if (isCurrent() && isCurrentWorkspace(id, 'ai', goal, resolvedMode)) {
           showMessage(message, true)
           sidebar.value.loading = false
           sidebar.value.statusMessage = ''
@@ -325,7 +359,7 @@ export function useAnalysisWorkspace({
       startTaskStream(id, 'ai', goal, resolvedMode)
       refreshAgentMeta(id, goal, false, resolvedMode)
     } catch (error) {
-      if (isCurrentWorkspace(id, 'ai', goal, resolvedMode)) {
+      if (isCurrent() && isCurrentWorkspace(id, 'ai', goal, resolvedMode)) {
         sidebar.value.mode = 'compose'
         sidebar.value.error = error.message || String(error)
         sidebar.value.loading = false
@@ -335,6 +369,9 @@ export function useAnalysisWorkspace({
   }
 
   const openAgent = async item => {
+    workspaceVersion += 1
+    const historyVersion = ++historyRequestVersion
+    const isCurrent = captureWorkspace()
     evidenceRequestVersion += 1
     const goal = loadGoalDraft(item.id)
     // 恢复上次使用的模式,与 goal 一起构成任务身份;缺省为通用模式。
@@ -358,7 +395,7 @@ export function useAnalysisWorkspace({
         throw new Error(detail || '历史分析状态加载失败')
       }
       const status = await response.json()
-      if (sidebar.value.mediaId !== item.id
+      if (!isCurrent() || historyVersion !== historyRequestVersion || sidebar.value.mediaId !== item.id
         || sidebar.value.goal !== goal
         || sidebar.value.analysisMode !== analysisMode) return
 
@@ -378,7 +415,7 @@ export function useAnalysisWorkspace({
       }
     } catch (error) {
       console.warn('Previous analysis unavailable', error)
-      if (sidebar.value.mediaId === item.id
+      if (isCurrent() && historyVersion === historyRequestVersion && sidebar.value.mediaId === item.id
         && sidebar.value.goal === goal
         && sidebar.value.analysisMode === analysisMode) {
         sidebar.value.error = error.message || '历史分析状态加载失败，可以重新提交'
@@ -410,17 +447,26 @@ export function useAnalysisWorkspace({
   const submitAgent = async () => {
     const goal = sidebar.value.goal.trim()
     if (!goal || sidebar.value.loading) return
+    historyRequestVersion += 1
+    workspaceVersion += 1
+    metadataRequestVersion += 1
+    const isCurrent = captureWorkspace()
     const mediaId = sidebar.value.mediaId
     // 后端、SSE scope 与异步回调必须使用同一份归一化目标，否则前后空格会让当前任务判定失配。
     sidebar.value.goal = goal
     sidebar.value.error = ''
     saveGoalDraft(mediaId, goal)
+    Object.assign(sidebar.value, {
+      plan: null, trace: null, evaluation: null, feedback: null,
+      followUp: '', followUpLoading: false, feedbackLoading: false,
+      editingPlan: false, planDraft: [], rerunLoading: false
+    })
     if (demoMode) {
       sidebar.value.mode = 'result'
       sidebar.value.loading = true
       sidebar.value.plan = DEMO_PLAN
       sidebar.value.trace = DEMO_TRACE
-      setTimeout(showDemoResult, 450)
+      setTimeout(() => { if (isCurrent()) showDemoResult() }, 450)
       return
     }
     let mode = sidebar.value.analysisMode || 'GENERAL'
@@ -438,7 +484,7 @@ export function useAnalysisWorkspace({
         console.warn('intent routing failed', error)
       }
       // 路由是异步的,用户可能已切到别的视频或改了目标;仅当仍停留在同一任务时才落定并继续。
-      if (sidebar.value.mediaId !== mediaId || sidebar.value.goal.trim() !== goal) return
+      if (!isCurrent() || sidebar.value.mediaId !== mediaId || sidebar.value.goal.trim() !== goal) return
       if (decision && decision.mode) {
         mode = decision.mode
         showMessage(`AI 已识别为「${modeTitle(mode)}」模式：${decision.reason || ''}`.trim())
@@ -450,10 +496,12 @@ export function useAnalysisWorkspace({
     }
     // 记住这次实际使用的具体模式,重开面板时据此恢复,保证能查回本次分析结果。
     saveModeDraft(mediaId, mode)
-    analyze(mediaId, goal, mode)
+    await analyze(mediaId, goal, mode)
   }
 
   const startNewAnalysis = () => {
+    historyRequestVersion += 1
+    workspaceVersion += 1
     sidebar.value.mode = 'compose'
     sidebar.value.loading = false
     sidebar.value.error = ''
@@ -478,16 +526,25 @@ export function useAnalysisWorkspace({
   }
 
   const rerunWithPlan = async () => {
+    if (sidebar.value.rerunLoading) return
     const tasks = sidebar.value.planDraft.map(task => task.trim()).filter(Boolean)
     if (!tasks.length || tasks.length > 5) {
       showMessage('计划需保留 1 至 5 个有效任务', true)
       return
     }
+    // A revised plan is a new generation even when media, goal and mode are unchanged.
+    workspaceVersion += 1
+    historyRequestVersion += 1
+    metadataRequestVersion += 1
+    const isCurrent = captureWorkspace()
+    const isCurrentSession = captureAuthSession()
+    sidebar.value.followUpLoading = false
+    sidebar.value.feedbackLoading = false
     if (demoMode) {
       sidebar.value.plan = { ...DEMO_PLAN, tasks }
       cancelPlanEdit()
       sidebar.value.loading = true
-      setTimeout(showDemoResult, 450)
+      setTimeout(() => { if (isCurrent()) showDemoResult() }, 450)
       return
     }
 
@@ -509,10 +566,15 @@ export function useAnalysisWorkspace({
       })
       const message = await response.text()
       if (!response.ok) throw new Error(message || '重新提交失败')
-      if (isCurrentWorkspace(mediaId, 'ai', goal, analysisMode)) {
+      if (!isCurrentSession()) return
+      if (isCurrent() && isCurrentWorkspace(mediaId, 'ai', goal, analysisMode)) {
         sidebar.value.plan = { ...sidebar.value.plan, tasks }
         cancelPlanEdit()
         sidebar.value.content = ''
+        metadataRequestVersion += 1
+        sidebar.value.trace = null
+        sidebar.value.evaluation = null
+        sidebar.value.feedback = null
         sidebar.value.loading = true
         sidebar.value.statusMessage = '已按新计划重新提交，正在重新执行'
         sidebar.value.streamOffline = false
@@ -520,17 +582,18 @@ export function useAnalysisWorkspace({
       }
       startTaskStream(mediaId, 'ai', goal, analysisMode)
     } catch (error) {
-      if (isCurrentWorkspace(mediaId, 'ai', goal, analysisMode)) {
+      if (isCurrent() && isCurrentWorkspace(mediaId, 'ai', goal, analysisMode)) {
         showMessage(error.message || '重新提交失败', true)
       }
     } finally {
-      if (isCurrentWorkspace(mediaId, 'ai', goal, analysisMode)) sidebar.value.rerunLoading = false
+      if (isCurrent() && isCurrentWorkspace(mediaId, 'ai', goal, analysisMode)) sidebar.value.rerunLoading = false
     }
   }
 
   const submitFollowUp = async () => {
+    const isCurrent = captureWorkspace()
     const question = sidebar.value.followUp.trim()
-    if (!question || sidebar.value.followUpLoading) return
+    if (!question || sidebar.value.followUpLoading || sidebar.value.loading || sidebar.value.rerunLoading) return
     if (demoMode) {
       sidebar.value.content += `\n\n## 追问\n${question}\n\n根据 08:42 的讲解，迭代写法使用显式栈保存待访问节点，时间复杂度仍为 O(n)，额外空间复杂度为 O(h)。`
       sidebar.value.followUp = ''
@@ -552,18 +615,18 @@ export function useAnalysisWorkspace({
       const response = await apiRequest(`/analysis/follow-up?${params}`, { method: 'POST' })
       const answer = await response.text()
       if (!response.ok) throw new Error(answer || '追问失败')
-      if (isCurrentWorkspace(mediaId, 'ai', goal, analysisMode)) {
+      if (isCurrent() && isCurrentWorkspace(mediaId, 'ai', goal, analysisMode)) {
         sidebar.value.content += `\n\n## 追问\n${question}\n\n${answer}`
         sidebar.value.followUp = ''
         // 答案追加在长文末尾，主动带用户滚过去，否则会以为“点了没反应”。
         onAnswerAppended()
       }
     } catch (error) {
-      if (isCurrentWorkspace(mediaId, 'ai', goal, analysisMode)) {
+      if (isCurrent() && isCurrentWorkspace(mediaId, 'ai', goal, analysisMode)) {
         showMessage(`❌ ${error.message}`, true)
       }
     } finally {
-      if (isCurrentWorkspace(mediaId, 'ai', goal, analysisMode)) sidebar.value.followUpLoading = false
+      if (isCurrent() && isCurrentWorkspace(mediaId, 'ai', goal, analysisMode)) sidebar.value.followUpLoading = false
     }
   }
 
@@ -617,6 +680,7 @@ export function useAnalysisWorkspace({
   }
 
   const sendFeedback = async rating => {
+    const isCurrent = captureWorkspace()
     if (sidebar.value.feedbackLoading || sidebar.value.feedback === rating) return
     if (demoMode) {
       sidebar.value.feedback = rating
@@ -634,16 +698,16 @@ export function useAnalysisWorkspace({
         body: JSON.stringify({ mediaId, goal, mode: analysisMode, rating })
       })
       if (!response.ok) throw new Error(await response.text())
-      if (isCurrentWorkspace(mediaId, 'ai', goal, analysisMode)) {
+      if (isCurrent() && isCurrentWorkspace(mediaId, 'ai', goal, analysisMode)) {
         sidebar.value.feedback = rating
         showMessage('反馈已记录')
       }
     } catch (error) {
-      if (isCurrentWorkspace(mediaId, 'ai', goal, analysisMode)) {
+      if (isCurrent() && isCurrentWorkspace(mediaId, 'ai', goal, analysisMode)) {
         showMessage(`❌ ${error.message}`, true)
       }
     } finally {
-      if (isCurrentWorkspace(mediaId, 'ai', goal, analysisMode)) sidebar.value.feedbackLoading = false
+      if (isCurrent() && isCurrentWorkspace(mediaId, 'ai', goal, analysisMode)) sidebar.value.feedbackLoading = false
     }
   }
 
@@ -660,6 +724,8 @@ export function useAnalysisWorkspace({
   }
 
   const resetWorkspace = () => {
+    workspaceVersion += 1
+    historyRequestVersion += 1
     evidenceRequestVersion += 1
     sidebar.value = createSidebarState()
   }

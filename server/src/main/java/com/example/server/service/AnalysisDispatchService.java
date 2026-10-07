@@ -89,8 +89,10 @@ public class AnalysisDispatchService {
                 : AnalysisTaskMsg.REVISE_ANALYSIS;
         String contentHash = revision == null ? contentHash(mediaId) : "media-" + mediaId;
         String goalDigest = AnalysisTaskKeys.goalDigest(goal, resolvedMode);
-        String activeKey = AnalysisTaskKeys.active(contentHash, goalDigest);
-        if (!acquireActiveKey(mediaId, activeKey)) return SubmissionResult.DUPLICATE;
+        String activeKey = AnalysisTaskKeys.active(AnalysisTaskKeys.mediaScope(mediaId), goalDigest);
+        Boolean accepted = redisTemplate.opsForValue().setIfAbsent(
+                activeKey, String.valueOf(mediaId), ACTIVE_TTL);
+        if (!Boolean.TRUE.equals(accepted)) return SubmissionResult.DUPLICATE;
 
         try {
             if (!tryAcquireQuota(mediaFile.getUserId(), bulk)) {
@@ -128,34 +130,10 @@ public class AnalysisDispatchService {
         return isActive(mediaId, goal, AnalysisMode.GENERAL);
     }
 
-    /** setIfAbsent on the active marker, plus one ledger-backed reconcile: the marker
-     *  is best-effort state that a killed process leaves behind for up to {@code ACTIVE_TTL},
-     *  and it is keyed by content hash, so one user's marker can even shadow another user's
-     *  upload of the same video. The ledger is the authority on whether this media's task is
-     *  actually in flight — a duplicate marker with no in-flight ledger row is stale, so it
-     *  is cleared and the submit retried once instead of dead-locking the content behind a
-     *  ghost. Concurrent same-content analysis stays serialized by the consumer's Redisson
-     *  lock and the content-level context lock, so clearing a stale marker cannot double-burn
-     *  transcription. */
-    private boolean acquireActiveKey(Long mediaId, String activeKey) {
-        if (Boolean.TRUE.equals(redisTemplate.opsForValue().setIfAbsent(
-                activeKey, String.valueOf(mediaId), ACTIVE_TTL))) {
-            return true;
-        }
-        if (taskLedger.hasActiveTask(mediaId)
-                || !Boolean.TRUE.equals(redisTemplate.delete(activeKey))) {
-            return false;
-        }
-        return Boolean.TRUE.equals(redisTemplate.opsForValue().setIfAbsent(
-                activeKey, String.valueOf(mediaId), ACTIVE_TTL));
-    }
-
     public boolean isActive(Long mediaId, String goal, AnalysisMode mode) {
         String goalDigest = AnalysisTaskKeys.goalDigest(goal, mode);
         return Boolean.TRUE.equals(redisTemplate.hasKey(
-                AnalysisTaskKeys.active(contentHash(mediaId), goalDigest)))
-                || Boolean.TRUE.equals(redisTemplate.hasKey(
-                AnalysisTaskKeys.active("media-" + mediaId, goalDigest)));
+                AnalysisTaskKeys.active(AnalysisTaskKeys.mediaScope(mediaId), goalDigest)));
     }
 
     /**

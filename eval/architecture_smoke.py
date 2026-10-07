@@ -49,7 +49,7 @@ def denied(path, token, method="GET", body=None):
     return status >= 400 or json.loads(response).get("code", 0) != 0
 
 def sql(statement):
-    result = subprocess.run(["docker", "exec", "-i", "dovideo-ai-mysql-1", "sh", "-c",
+    result = subprocess.run(["docker", "exec", "-i", os.environ.get("FIXTURE_MYSQL_CONTAINER", "video-kb-fixture-mysql-1"), "sh", "-c",
         'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -N -B videoagent_arch_20261007'],
         input=statement, text=True, capture_output=True, check=True)
     return result.stdout.strip()
@@ -165,7 +165,7 @@ def main():
     report = {"fixture": "2 synthetic timestamped segments, deterministic three-dimensional embeddings; real MySQL/Redis/RocketMQ/Qdrant/MinIO",
               "production_quality_claim": False, "checks": CHECKS, "concurrency": 8, "mixed_workload": "90 retrieval requests + 18 job-status reads + 1 index rebuild, concurrent", "latency": timings,
               "ui_fixture": {"spaceId": space, "sourceId": source_id, "mediaId": media_id}}
-    target = Path(__file__).parent / "reports" / "architecture-smoke-20261007.json"
+    target = Path(__file__).parent / "reports" / f"architecture-smoke-{os.environ.get('FIXTURE_REPORT_DATE', '20261008')}.json"
     target.write_text(json.dumps(report, ensure_ascii=False, indent=2))
     print(json.dumps({"passed": len(CHECKS), "report": str(target), "latency": timings}, ensure_ascii=False))
 

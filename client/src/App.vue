@@ -48,7 +48,7 @@
               type="file"
               id="file-input"
               @change="handleFileChange"
-              accept="video/*"
+              accept=".mp4,.mov,.mkv,.avi,.webm,.m4v"
               multiple
               hidden
           />
@@ -254,6 +254,11 @@
         </div>
       </section>
 
+      <div v-if="currentUser && (listError || !list.length)" class="library-empty" role="status">
+        <p>{{ listLoading ? '正在加载视频资料库…' : listError || '还没有视频，上传本地文件或粘贴视频链接即可开始分析。' }}</p>
+        <button v-if="listError" type="button" :disabled="listLoading" @click="fetchList({ notify: true })">重新加载</button>
+      </div>
+
       <div class="sidebar-backdrop" v-if="sidebar.visible" @click="closeSidebar"></div>
       <div
           ref="sidebarPanel"
@@ -264,6 +269,7 @@
           aria-modal="true"
           tabindex="-1"
           :aria-label="sidebar.title || '任务详情'"
+          @keydown="trapPanelFocus($event, sidebarPanel)"
       >
         <div class="sidebar-header">
           <div class="sidebar-title">
@@ -313,6 +319,7 @@
             <p v-if="sidebar.error" class="inline-error" role="alert">{{ sidebar.error }}</p>
             <textarea
                 v-model="sidebar.goal"
+                aria-label="分析目标"
                 maxlength="500"
                 placeholder="例如：梳理核心观点，给出带时间戳的证据和可执行建议（Ctrl / ⌘ + Enter 提交）"
                 @keydown.ctrl.enter.prevent="submitAgent"
@@ -356,6 +363,7 @@
 
           <div v-else>
             <div v-if="sidebar.type === 'ai'">
+              <p v-if="sidebar.error" class="inline-error" role="alert">{{ sidebar.error }}</p>
               <div class="result-actions">
                 <button type="button" @click="startNewAnalysis">更换产物</button>
                 <button type="button" :disabled="!sidebar.content" @click="copyResult">复制结果</button>
@@ -427,6 +435,7 @@
               <div class="follow-up-box">
                 <textarea
                     v-model="sidebar.followUp"
+                    aria-label="基于视频继续追问"
                     maxlength="500"
                     placeholder="基于视频继续追问...（Ctrl / ⌘ + Enter 发送）"
                     @keydown.ctrl.enter.prevent="submitFollowUp"
@@ -492,7 +501,7 @@
             </div>
             <div class="auth-toggle">
               <span class="toggle-text">{{ authMode === 'login' ? '没有账号?' : '已有账号?' }}</span>
-              <button type="button" class="toggle-link" @click="switchAuthMode()">{{ authMode === 'login' ? '去注册' : '去登录' }}</button>
+              <button type="button" class="toggle-link" :disabled="authLoading" @click="switchAuthMode()">{{ authMode === 'login' ? '去注册' : '去登录' }}</button>
             </div>
             <p
                 v-if="authMessage"
@@ -516,7 +525,7 @@
 
 <script setup>
 import { computed, nextTick, ref, watch, onMounted, onUnmounted } from 'vue'
-import { apiRequest, clearAuthToken, hasAuthToken, setAuthToken } from './api'
+import { apiRequest, captureAuthSession, clearAuthToken, hasAuthToken, setAuthToken } from './api'
 import {
   forgetUploadProgress,
   formatBytes,
@@ -544,6 +553,11 @@ const uploadAbort = ref(null)
 const resumableFile = ref(null)
 const resumableChunks = ref({ done: 0, total: 0 })
 const list = ref([])
+const listLoading = ref(false)
+const listError = ref('')
+let listRequestVersion = 0
+let uploadRequestVersion = 0
+let authRequestVersion = 0
 const searchQuery = ref('')
 const videoPlayer = ref(null)
 const pendingKnowledgeSeek = ref(null)
@@ -571,7 +585,6 @@ const authForm = ref({ username: '', password: '', nickname: '' })
 const taskStreams = createTaskStreams({
   onActiveChange: tasks => { activeTasks.value = tasks }
 })
-const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'mkv', 'avi', 'webm', 'm4v'])
 let dragDepth = 0
 let messageTimer = null
 let elapsedTimer = null
@@ -712,16 +725,16 @@ const startUpload = async (fileList) => {
 
 const runUploadQueue = async () => {
   const queue = uploadQueue.value
+  const isCurrentSession = captureAuthSession()
   const isBatch = queue.length > 1
   uploading.value = true
   uploadAbort.value = new AbortController()
   let succeeded = 0
   let failed = 0
-  let dispatched = 0
-  let lastMedia = null
 
   try {
     for (const item of queue) {
+      if (!isCurrentSession()) break
       if (item.status !== 'queued') continue
       if (uploadAbort.value?.signal.aborted) {
         item.status = 'failed'
@@ -732,27 +745,15 @@ const runUploadQueue = async () => {
       item.status = 'uploading'
       file.value = item.file
       const result = await uploadFile()
-      if (result.ok) {
+      if (result?.ok) {
         item.status = 'done'
         item.message = ''
         succeeded += 1
-        lastMedia = result.media
-        // 批量场景与目录导入同语义：传完即用默认目标排队分析（RocketMQ 异步，
-        // 卡片状态与任务台账可见）；单文件仍走 openAgent 让用户自选目标。
-        if (isBatch && result.media?.id) {
-          try {
-            const params = new URLSearchParams({ id: String(result.media.id), mode: 'GENERAL' })
-            const response = await apiRequest(`/analysis/ai?${params}`, { method: 'POST' })
-            if (response.ok || response.status === 202) dispatched += 1
-          } catch {
-            // 派发失败不回滚上传：用户可稍后点卡片的 Video Agent 手动开始。
-          }
-        }
-      } else if (result.skipped) {
+      } else if (result?.skipped) {
         item.status = 'failed'
         item.message = '已跳过'
         failed += 1
-      } else if (result.aborted) {
+      } else if (result?.aborted) {
         item.status = 'failed'
         item.message = '已取消（进度已保留）'
         failed += 1
@@ -773,10 +774,13 @@ const runUploadQueue = async () => {
       }
     }
   } finally {
-    uploading.value = false
-    uploadAbort.value = null
-    file.value = null
+    if (isCurrentSession()) {
+      uploading.value = false
+      uploadAbort.value = null
+      file.value = null
+    }
   }
+  if (!isCurrentSession()) return
 
   if (queue.length === 1) {
     const only = queue[0]
@@ -793,7 +797,7 @@ const runUploadQueue = async () => {
 
   const skipped = queue.length - succeeded - failed
   const summary = `批量上传结束：成功 ${succeeded}，失败 ${failed}${skipped ? `，跳过 ${skipped}` : ''}`
-  const dispatchNote = dispatched ? `；${dispatched} 个已自动开始分析（转写计费，进度看卡片状态）` : '；可点击卡片上的 Video Agent 开始分析'
+  const dispatchNote = '；已自动加入知识处理队列，进度可在知识库查看'
   showMsg(failed ? `⚠️ ${summary}（失败文件进度已保留，可重新选择后继续）${dispatchNote}` : `✅ ${summary}${dispatchNote}`, failed > 0)
   // 多文件完成后保留结果列表供用户查看；下次发起上传时自动清空。
 }
@@ -841,7 +845,7 @@ const applyUploadProgress = progress => {
 }
 
 const rememberResumableUpload = target => {
-  if (!target || !hasUploadProgress(target)) {
+  if (!target || !hasUploadProgress(target, currentUser.value?.id)) {
     resumableFile.value = null
     return
   }
@@ -850,14 +854,6 @@ const rememberResumableUpload = target => {
     done: lastUploadProgress.completedChunks || 0,
     total: lastUploadProgress.totalChunks || 0
   }
-}
-
-/** 上传完成后的统一收尾：后端已自动派发默认分析，打开面板并立即接管进度流
- *  （面板 goal 与后端同源 → 409 接管 / 200 复用结果 / 202 正常启动）。 */
-const openAnalysisProgress = uploadedMedia => {
-  if (!uploadedMedia?.id) return
-  openAgent(uploadedMedia)
-  submitAgent()
 }
 
 /** 上传 file.value 单个文件；提示职责在调用方，这里只返回结构化结果。 */
@@ -870,13 +866,16 @@ const uploadFile = async () => {
   }
 
   const controller = new AbortController()
+  const requestVersion = ++uploadRequestVersion
+  const isCurrentSession = captureAuthSession()
+  const isCurrentUpload = () => requestVersion === uploadRequestVersion && isCurrentSession()
   uploadAbort.value = controller
   uploading.value = true
   resumableFile.value = null
   lastUploadProgress = {}
   const uploadUserId = currentUser.value?.id
   uploadProgress.value = {
-    label: hasUploadProgress(target) ? '正在核对已上传分片' : '准备分片上传',
+    label: hasUploadProgress(target, uploadUserId) ? '正在核对已上传分片' : '准备分片上传',
     filename: target.name,
     percent: 0,
     detail: `0 B / ${formatBytes(target.size)}`,
@@ -884,22 +883,26 @@ const uploadFile = async () => {
   }
 
   try {
-    const uploadedMedia = await uploadVideoInChunks(target, applyUploadProgress, controller.signal)
-    if (currentUser.value?.id !== uploadUserId) return { ok: false, skipped: true }
+    const uploadedMedia = await uploadVideoInChunks(target, progress => {
+      if (isCurrentUpload()) applyUploadProgress(progress)
+    }, controller.signal, uploadUserId)
+    if (!isCurrentUpload()) return { ok: false, skipped: true }
     resumableFile.value = null
     await fetchList({ notify: true })
-    openAnalysisProgress(uploadedMedia)
+    if (!isCurrentUpload()) return { ok: false, skipped: true }
     return { ok: true, media: uploadedMedia }
   } catch (error) {
-    if (currentUser.value?.id !== uploadUserId) return { ok: false, skipped: true }
+    if (!isCurrentUpload()) return { ok: false, skipped: true }
     rememberResumableUpload(target)
     if (error?.aborted) return { ok: false, aborted: true }
     console.error(error)
     return { ok: false, error }
   } finally {
-    uploading.value = false
-    uploadAbort.value = null
-    file.value = null
+    if (isCurrentUpload()) {
+      uploading.value = false
+      uploadAbort.value = null
+      file.value = null
+    }
   }
 }
 
@@ -917,7 +920,7 @@ const resumeUpload = async () => {
   const result = await uploadFile()
   if (result.ok) {
     showMsg(`✅ ${target.name} 上传完成，已自动开始解析`)
-  } else if (result.aborted) {
+  } else if (result?.aborted) {
     showMsg('上传已取消，进度已保留，可点“继续上传”接着传')
   } else if (result.error) {
     showMsg(
@@ -930,7 +933,7 @@ const resumeUpload = async () => {
 }
 
 const discardResumableUpload = () => {
-  forgetUploadProgress(resumableFile.value)
+  forgetUploadProgress(resumableFile.value, currentUser.value?.id)
   resumableFile.value = null
   resumableChunks.value = { done: 0, total: 0 }
   showMsg('已清除保留的上传进度，下次将从头开始')
@@ -967,7 +970,9 @@ const handleUrlUpload = async () => {
   }
 
   uploading.value = true
-  const uploadUserId = currentUser.value?.id
+  const requestVersion = ++uploadRequestVersion
+  const isCurrentSession = captureAuthSession()
+  const isCurrentUpload = () => requestVersion === uploadRequestVersion && isCurrentSession()
   uploadProgress.value = {
     label: '正在解析视频链接',
     filename: parsedUrl.hostname,
@@ -988,20 +993,20 @@ const handleUrlUpload = async () => {
     })
     if (!res.ok) throw new Error(await res.text())
     const uploadedMedia = await res.json()
-    if (currentUser.value?.id !== uploadUserId) return
+    if (!isCurrentUpload()) return
 
     showMsg('✅ 链接资源已入库，已自动开始解析')
     videoUrl.value = ''
     await fetchList({ notify: true })
-    openAnalysisProgress(uploadedMedia)
+    if (!isCurrentUpload()) return
   } catch (error) {
     console.error(error)
-    if (currentUser.value?.id !== uploadUserId) return
+    if (!isCurrentUpload()) return
     let errMsg = error.message
     if (errMsg.includes("Unsupported URL")) errMsg = "不支持该平台链接"
     showMsg('❌ 解析失败: ' + errMsg, true)
   } finally {
-    uploading.value = false
+    if (isCurrentUpload()) uploading.value = false
   }
 }
 
@@ -1028,29 +1033,34 @@ const dismissMessage = () => {
 }
 
 const fetchList = async ({ notify = false } = {}) => {
+  const requestVersion = ++listRequestVersion
+  const isCurrentSession = captureAuthSession()
+  const isCurrentRequest = () => requestVersion === listRequestVersion && isCurrentSession()
   if (DEMO_MODE) return list.value
   if (!currentUser.value) {
     list.value = []
     return list.value
   }
+  listLoading.value = true
+  listError.value = ''
   try {
     // 带时间戳绕开浏览器缓存，避免删除/新增之后列表还是旧的。
     const res = await apiRequest(`/media/list?_t=${Date.now()}`)
     if (res.status === 401) return null
     if (!res.ok) throw new Error('加载视频列表失败')
-    list.value = await res.json()
+    const media = await res.json()
+    if (!isCurrentRequest()) return null
+    list.value = media
   } catch (error) {
+    if (!isCurrentRequest()) return null
     console.error(error)
+    listError.value = '视频资料库加载失败，请稍后重试'
     if (notify) showMsg('视频资料库加载失败，请稍后刷新', true)
     return null
+  } finally {
+    if (isCurrentRequest()) listLoading.value = false
   }
   return list.value
-}
-
-const isSupportedVideo = selectedFile => {
-  if (selectedFile.type?.startsWith('video/')) return true
-  const extension = selectedFile.name?.split('.').pop()?.toLowerCase()
-  return VIDEO_EXTENSIONS.has(extension)
 }
 
 const mediaStatusClass = status => ['COMPLETED', 'PROCESSING', 'FAILED'].includes(status)
@@ -1252,10 +1262,14 @@ const deleteItem = async (item) => {
     : ''
   if (!confirm(`确认要永久删除 "${item.filename}" 吗？${warning}`)) return
   deletingId.value = item.id
+  const isCurrentSession = captureAuthSession()
   try {
     const res = await apiRequest(`/media/delete?id=${item.id}`, { method: 'DELETE' })
     const text = await res.text()
+    if (!isCurrentSession()) return
     if (res.ok) {
+      listRequestVersion += 1
+      listLoading.value = false
       showMsg(`已删除 ${item.filename}`)
       list.value = list.value.filter(i => i.id !== item.id)
       discardMediaWorkspace(item.id)
@@ -1263,9 +1277,10 @@ const deleteItem = async (item) => {
       showMsg('❌ ' + text, true)
     }
   } catch (e) {
+    if (!isCurrentSession()) return
     showMsg('❌ 删除请求失败', true)
   } finally {
-    deletingId.value = null
+    if (isCurrentSession()) deletingId.value = null
   }
 }
 
@@ -1316,6 +1331,8 @@ const openAuthModal = () => {
   authForm.value = { username: '', password: '', nickname: '' }
 }
 const closeAuthModal = () => {
+  authRequestVersion += 1
+  authLoading.value = false
   showAuthModal.value = false
   restoreFocus(focusBeforeAuth)
   focusBeforeAuth = null
@@ -1330,14 +1347,17 @@ const handleKeydown = event => {
 
 /** 弹窗内循环 Tab，键盘用户不会一路跳到被遮住的背景里。 */
 const trapAuthFocus = event => {
-  if (event.key !== 'Tab' || !authPanel.value) return
-  const focusable = [...authPanel.value.querySelectorAll('button, input, [tabindex]:not([tabindex="-1"])')]
+  trapPanelFocus(event, authPanel.value)
+}
+const trapPanelFocus = (event, panel) => {
+  if (event.key !== 'Tab' || !panel) return
+  const focusable = [...panel.querySelectorAll('button, input, textarea, select, a[href], summary, [tabindex]:not([tabindex="-1"])')]
     .filter(element => !element.disabled && element.offsetParent !== null)
   if (!focusable.length) return
   const first = focusable[0]
   const last = focusable[focusable.length - 1]
   const active = document.activeElement
-  if (event.shiftKey && (active === first || !authPanel.value.contains(active))) {
+  if (event.shiftKey && (active === first || active === panel || !panel.contains(active))) {
     event.preventDefault()
     last.focus()
   } else if (!event.shiftKey && active === last) {
@@ -1351,6 +1371,7 @@ const switchAuthMode = ({ keepMessage = false } = {}) => {
   if (!keepMessage) authMessage.value = ''
 }
 const handleAuth = async () => {
+  if (authLoading.value) return
   if (!authForm.value.username || !authForm.value.password) {
     authMessage.value = '请输入完整的账号和密码'
     authError.value = true
@@ -1358,46 +1379,60 @@ const handleAuth = async () => {
   }
   authLoading.value = true
   authMessage.value = ''
-  const endpoint = authMode.value === 'login' ? '/user/login' : '/user/register'
+  const requestVersion = ++authRequestVersion
+  const mode = authMode.value
+  const endpoint = mode === 'login' ? '/user/login' : '/user/register'
   try {
     const res = await apiRequest(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(authForm.value)
     })
+    if (requestVersion !== authRequestVersion) return
     if (!res.ok) {
-      authMessage.value = (await res.text()) || `请求失败（HTTP ${res.status}）`
+      const message = await res.text()
+      if (requestVersion !== authRequestVersion) return
+      authMessage.value = message || `请求失败（HTTP ${res.status}）`
       authError.value = true
       return
     }
     const data = await res.json().catch(() => null)
+    if (requestVersion !== authRequestVersion) return
     if (!data?.userInfo) {
       authMessage.value = '服务端返回异常，请稍后重试'
       authError.value = true
       return
     }
-    if (authMode.value === 'login') {
+    if (mode === 'login') {
+      setAuthToken(data.token)
       currentUser.value = data.userInfo
       localStorage.setItem('user', JSON.stringify(data.userInfo))
-      setAuthToken(data.token)
       closeAuthModal()
       showMsg(`欢迎回来，${data.userInfo.nickname}`)
       fetchList({ notify: true })
     } else {
       authMessage.value = '注册成功，账号密码已保留，直接点“立即登录”即可'
       authError.value = false
-      setTimeout(() => switchAuthMode({ keepMessage: true }), 900)
+      switchAuthMode({ keepMessage: true })
     }
   } catch (e) {
+    if (requestVersion !== authRequestVersion) return
     console.error(e)
     authMessage.value = e?.message || '网络连接错误'
     authError.value = true
   } finally {
-    authLoading.value = false
+    if (requestVersion === authRequestVersion) authLoading.value = false
   }
 }
 /** 退出与登录失效走同一套清理，避免两处漏掉不同的字段。 */
 const resetSessionState = () => {
+  uploadRequestVersion += 1
+  listRequestVersion += 1
+  authRequestVersion += 1
+  authLoading.value = false
+  deletingId.value = null
+  listLoading.value = false
+  listError.value = ''
   uploadAbort.value?.abort()
   uploadAbort.value = null
   taskStreams.stopAll()
@@ -1497,6 +1532,10 @@ onMounted(() => {
   fetchList({ notify: Boolean(currentUser.value) })
 })
 onUnmounted(() => {
+  uploadRequestVersion += 1
+  listRequestVersion += 1
+  authRequestVersion += 1
+  resetWorkspace()
   window.removeEventListener('auth-expired', handleAuthExpired)
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('online', handleOnline)
