@@ -1,83 +1,51 @@
-# 视频知识库·完整体验 SOP
+# 视频知识库体验与验收 SOP
 
-> 目标：任何人（包括未来的你自己）10 分钟内从零体验完整的跨视频检索知识库——Web 界面问答 + 外部 AI 客户端经 MCP 接入两条路。
-> 本 SOP 的每一步都于 2026-09-28 在本机实机走查通过（截图见 `docs/acceptance/`）。
+状态：`active`
+最后复核：2026-10-07
 
-## 前置状态（一次性，通常已完成）
+本页按当前代码描述操作，不能表示每一步均已完成真实视频回归。当前证据范围见 [CURRENT](CURRENT.md)，9 月真实问答与原片播放记录保留在 [历史体验验收](archive/完整体验验收-2026-09-28.md)。
 
-| 项 | 检查方式 | 未就绪时的动作 |
-| --- | --- | --- |
-| 基础设施 docker 栈 | `docker compose --env-file .env ps` 六个容器 Up | `./scripts/dev-up.sh` |
-| 后端 9090 | `curl http://127.0.0.1:9090/health` → mysql/redis UP | `cd server && ./mvnw spring-boot:run`（记得 `unset SERVER_PORT` 或用 dev-up） |
-| 前端 5173 | `curl http://localhost:5173/` → 200 | `cd client && npm run dev`；**用 http://localhost:5173 访问**（Vite 默认只绑 IPv6 的 ::1，用 127.0.0.1 会"无法连接后端"） |
-| MCP 适配器 9091 | POST /mcp ping → 200 | `.env` 需有 `MCP_CLIENT_TOKENS`，重启 dev-up |
-| 语料 | 登录后知识库可见 13 个 READY 视频 | `python3 scripts/import_corpus.py --seed evaluation/seeds/bilibili-mianshi-v1.json --root <媒体目录> --skip-asr --skip-import`（仅挂载）或完整跑 |
-| 账号 | `mcp_service`（`.env` 的 `DOVIDEO_API_USERNAME/PASSWORD`） | `docs/MCP_SOP.md` §1 有注册命令 |
+## 准备
 
-## 路线 A · Web 界面问答（5 分钟）
+按仓库 README 和 `.env.example` 配置 JDK/视频工具/模型/基础设施，运行 `scripts/dev-up.sh`，使用实际启动 URL。默认前端 `http://localhost:5173`；代理后端由 `VITE_DEV_PROXY_TARGET` 决定，未设置时为 `http://localhost:9090`。
 
-1. 打开 **http://localhost:5173**（务必 localhost），右上角「登录 / 注册」→ 用 `mcp_service` 账号登录。
-2. 顶部切「**知识库**」→ 左侧选「**技术面试知识库**」→ 目录点「**B站面试八股合集**」→ 应看到 13 个 READY 来源（12 期 checkpoint 零重烧导入 + 01 期真 ASR）。
-3. 在「向知识空间提问」输入 **跨视频问题**（演示问题清单见下），点「提问」→ 等待 20–60 秒（进度显示"整理证据中…"）。
-4. 核对回答区五要素：
-   - 徽章「**有证据支持**」（或域外问题显示「证据不足」）；
-   - 回答正文（Markdown，标明观点来自哪个视频）；
-   - 「N 条引用」：每条含来源视频文件名 + **秒级时间戳 + ↗** + claim + **逐字 quote**（ASR 原文，错字保留如 "relix"）；
-   - 警告区（正常无内容）。
-5. **点击引用的时间戳按钮（如 `6:00–7:00 ↗`）** → 自动切回视频工作台、打开该视频播放器并定位到引用窗口（实测 381s 落在 6:00–7:00 内）自动播放。
-6. 输入**域外问题**（如 React Hooks）→ 应显示「证据不足」徽章 + 「当前知识库中没有找到足以支持这个回答的证据。」+「未检索到候选证据，未调用生成模型。」
-7. （可选）「仅搜证据」按钮 = 纯检索模式，直接看跨视频命中列表（mediaId+时间戳+matchType+score）。
+登录自己的账号；MCP 测试需使用配置的同一上游账号。不要假定所有环境都有固定的 13 条旧语料。health 只说明被检查的依赖，不能证明 MQ、模型、向量与播放器完整工作。
 
-**演示问题清单**（实测效果）：
+## 路线 A：接收与组织课程
 
-| 类型 | 问题 | 预期 |
-| --- | --- | --- |
-| 跨视频·项目结合 | 做外卖或点评这类项目时，Redis 缓存一般怎么用？ | 有证据支持，引用命中苍穹外卖+黑马点评两期 |
-| 跨视频·单期精确 | JVM 有哪些常见的垃圾回收器？ | 引用命中 JVM 期 1920s 附近（串行/并行/CMS） |
-| 概念精确 | MySQL 的索引为什么用 B+ 树而不是 B 树？ | 引用命中 MySQL 期，quote 保留 ASR 原文 |
-| 域外·拒答 | React Hooks 的使用规则是什么？ | 证据不足 + 未调用生成模型 |
-| 域外·拒答 | Kubernetes 的调度器是怎么工作的？ | 证据不足 |
+1. 在视频工作台上传一个实际课程视频，接收成功后切到知识库。
+2. 知识入库在后台运行；观察 QUEUED/PROCESSING/READY/FAILED 与错误。上传完成不等于完成向量化，报告状态不代表知识状态。
+3. 创建“前端学习”“后端学习”等目录。空目录本身不会产生可检索知识。
+4. 选择来源“同时归入”，添加另一目录的引用；两目录应显示同一个来源，已有内容处理不重跑。
+5. 普通拖动移动当前引用；Alt/Option 拖动添加引用。移动不是复制媒体。
+6. 在某个目录执行“移除此处引用”，其他目录保留；最后一处不能解除。真正删除视频会撤销整份来源，不是解除当前引用。
 
-## 路线 B · 外部 AI 客户端经 MCP（5 分钟）
+现有本地目录扫描/导入、脚本/笔记和 Muku 接入可继续使用。视频导入默认生成知识任务；报告需主动请求。本地 CHANGED 文件仍先删旧资产，这个入口不能作为安全版本替换的完整验收。
 
-> 完整运维细节在 `docs/MCP_SOP.md`；这里只给体验路径。
+## 路线 B：检索、问答和回看
 
-1. **Claude Code**（最简）：
-   ```bash
-   TOKEN=$(grep '^MCP_CLIENT_TOKENS=' .env | cut -d= -f2 | tr -d '"')
-   claude mcp add --transport http dovideo-knowledge http://127.0.0.1:9091/mcp \
-     --header "Authorization: Bearer $TOKEN"
-   ```
-   之后在 Claude Code 里直接问："我的视频知识库里，消息队列是怎么保证消息不丢的？"
-2. **Cursor / Cherry Studio / 任意 JSON 配置客户端**：知识库页面左侧「MCP 出口」有一键复制的配置块（`http://<host>:9091/mcp` + Bearer 令牌），把 `<令牌>` 换成 `.env` 里 `MCP_CLIENT_TOKENS` 的值。
-3. **任意 HTTP 进程 / 脚本**：
-   ```bash
-   scripts/mcp_sop_check.sh            # 一键验收：握手→四工具→ask→拒答全绿
-   python3 scripts/mcp_e2e_client.py --token "$TOKEN"   # 逐步走协议
-   ```
-4. 四个工具：`list_knowledge_spaces` / `search_video_knowledge` / **`ask_video_knowledge`**（跨视频问答，带时间戳引用与拒答）/ `get_video_evidence`。
+1. 选空间或目录，先使用“仅搜证据”，核对 vector/keyword/hybrid 标记、来源与时间。
+2. 同一内容多处归属时，全范围搜索不重复同一版本证据；目录查询包含子目录。检索范围仍以当前用户授权为准。
+3. 使用“提问”，检查自然语言答案、引用、来源、时间、quote 和拒答/警告。一个跨视频问题应检查全部必要来源，而非只要一条正确来源就通过。
+4. 点击引用时间戳，播放器应打开对应实际视频并定位；真实播放验收必须使用可播放媒体，合成字节不能代替。
+5. 问一个确定超出语料的问题，检查证据不足处理；随后继续提问仍是新的单次 ask，不能把它视作已有多轮会话。
 
-## 已达标的质量水位（评测背书）
+课程问题需由真实材料标注。例如“前端请求缓存和后端缓存分别在哪里实现”只有在语料确实包含这两类证据时才能期待完整回答，不因问题听起来合理就编造金标准。
 
-评测 runner：`python3 eval/knowledge_eval.py --username mcp_service --password '<.env>' --golden eval/golden-v2.json --mode both`
+## 路线 C：重建与故障
 
-| 指标（2026-09-28，31 条 golden） | 数字 | 门禁 |
-| --- | --- | --- |
-| 检索 Recall@5（hybrid，片段级时间窗口径） | **0.96** | ≥0.6 ✅ |
-| 检索 MRR（hybrid） | **0.89** | — |
-| 拒答正确率（ask，双向判定） | **6/6** | =1.0 ✅ |
-| 引用有效率（评测侧独立逐字复核） | **65/65 = 1.0** | ≥0.8 ✅ |
-| 关键词覆盖 | 0.64 | ≥0.5 ✅ |
-| ask 延迟 p50 / p95 | 18s / 48s | 深度问答型，可接受 |
+来源可用后主动重建索引。新 generation 成功发布前保留旧结果；失败时查看独立 job 错误并使用重试入口。旧知识 READY 与重建 job FAILED 可以同时存在。
 
-调优案例（面试素材）：基线 10 个 miss 归因为「复合长问题下模型提交 0 引用」（8 例）；prompt 增加"禁止交白卷"规则后 answerable 15→17/25、关键词覆盖 0.587→0.64，拒答与引用有效率保持满分。报告在 `eval/reports/eval-20260928-*-{baseline,tuned-anti-blank}.json`。
+界面重试使用异步 `POST /knowledge/ingest-jobs/sources/{sourceId}/retry`；旧 `POST /knowledge/sources/{sourceId}/reindex` 仍为同步调用方操作路径，不能把旧接口当新异步 job 响应。返回 false 的任务请求不能显示为已受理；不支持视频 job 的资料类型需走自己的既有索引路径。
 
-## 常见故障
+按需在 Video Agent 启动单视频报告。报告预算失败不应改变已发布来源 READY。暂停/中断模型、队列或存储的故障实验仅在隔离环境进行，本次未停止共享 MQ 做实机验证。
 
-| 症状 | 原因 | 处置 |
-| --- | --- | --- |
-| 页面一直"无法连接后端服务" | 用 127.0.0.1 访问（Vite 只绑 ::1） | 改用 **http://localhost:5173** |
-| 提问后 60s+ 无响应且报连接错误 | 后端没起 / 正在被评测占用 | 看 `/tmp/dovideo-backend.log`；等评测跑完 |
-| 回答"证据不足"但问题明明在库里 | 复合太长的问题先试试拆开问；或看 `eval/reports` 里该类 case | 换关键词重问 |
-| MCP 工具 40100 | 走了静态 token 模式 | `docs/MCP_SOP.md` §5 |
-| 引用点 ↗ 没跳转 | 该视频不在工作台列表（如脚本来源） | 只有点 VIDEO 来源的引用可回跳 |
+## 路线 D：外部学习助手
+
+按 [MCP SOP](MCP_SOP.md) 配置客户端令牌。列空间 → 查目录/状态 → 在显式范围检索/提问 → 拉时间窗证据。五工具不意味着不同学生获得各自权限，当前所有客户端共用配置上游主体。
+
+## 证据与记录
+
+本次已走查“同时归入”“移除此处引用”和混合检索，见 [页面截图](../eval/reports/architecture-ui-20261007.jpg)。合成媒体未用于真实播放、真实 ASR 或回答质量验收。
+
+每轮真实验收记录语料、用户主体/显式范围、当前版本、操作、期待/实际结果、截图与报告链接，不记录令牌。历史质量数字和指标边界统一见 [CURRENT](CURRENT.md)，不在 SOP 再维护一套“当前质量水位”。

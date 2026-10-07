@@ -28,11 +28,14 @@ public class KnowledgeSourceController {
 
     private final KnowledgeSourceService sourceService;
     private final KnowledgeSegmentIndexService segmentIndexService;
+    private final com.example.server.service.KnowledgePlacementService placements;
 
     public KnowledgeSourceController(KnowledgeSourceService sourceService,
-                                     KnowledgeSegmentIndexService segmentIndexService) {
+                                     KnowledgeSegmentIndexService segmentIndexService,
+                                     com.example.server.service.KnowledgePlacementService placements) {
         this.sourceService = sourceService;
         this.segmentIndexService = segmentIndexService;
+        this.placements = placements;
     }
 
     @GetMapping
@@ -58,6 +61,34 @@ public class KnowledgeSourceController {
             @PathVariable Long sourceId,
             @Valid @RequestBody KnowledgeSourceLocationRequest request) {
         return Result.ok(sourceService.move(userId, sourceId, request));
+    }
+
+    @GetMapping("/{sourceId}/placements")
+    public Result<List<com.example.server.entity.KnowledgePlacement>> placements(
+            @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId, @PathVariable Long sourceId) {
+        return Result.ok(placements.listOwned(userId, sourceId));
+    }
+
+    @PostMapping("/{sourceId}/placements")
+    public Result<com.example.server.entity.KnowledgePlacement> addPlacement(
+            @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId, @PathVariable Long sourceId,
+            @Valid @RequestBody KnowledgeSourceLocationRequest request) {
+        return Result.ok(placements.add(userId, sourceId, request));
+    }
+
+    @PatchMapping("/{sourceId}/placements/{placementId}")
+    public Result<com.example.server.entity.KnowledgePlacement> movePlacement(
+            @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId, @PathVariable Long sourceId,
+            @PathVariable Long placementId, @Valid @RequestBody KnowledgeSourceLocationRequest request) {
+        return Result.ok(placements.move(userId, sourceId, placementId, request));
+    }
+
+    @org.springframework.web.bind.annotation.DeleteMapping("/{sourceId}/placements/{placementId}")
+    public Result<Void> removePlacement(
+            @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId, @PathVariable Long sourceId,
+            @PathVariable Long placementId) {
+        placements.remove(userId, sourceId, placementId);
+        return Result.ok();
     }
 
     @GetMapping("/{sourceId}/tags")

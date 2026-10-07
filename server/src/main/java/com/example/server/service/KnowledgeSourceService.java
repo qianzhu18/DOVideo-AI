@@ -6,7 +6,6 @@ import com.example.server.common.ErrorCode;
 import com.example.server.dto.KnowledgeSourceLocationRequest;
 import com.example.server.dto.KnowledgeSourceTagsRequest;
 import com.example.server.dto.KnowledgeSourceView;
-import com.example.server.entity.KnowledgeCollection;
 import com.example.server.entity.KnowledgeSource;
 import com.example.server.entity.KnowledgeSourceTag;
 import com.example.server.entity.KnowledgeSourceVersion;
@@ -17,7 +16,6 @@ import com.example.server.mapper.KnowledgeSourceMapper;
 import com.example.server.mapper.KnowledgeSourceTagMapper;
 import com.example.server.mapper.KnowledgeSourceVersionMapper;
 import com.example.server.mapper.MediaFileMapper;
-import com.example.server.service.task.AnalysisTaskService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
@@ -61,13 +59,8 @@ public class KnowledgeSourceService {
     private final KnowledgeSpaceService spaceService;
     private final KnowledgeCollectionService collectionService;
     private final KnowledgeAuditService auditService;
-    private final QdrantVectorStore vectorStore;
-    /** Filing an un-analyzed source into a space starts its analysis: entering the
-     *  knowledge base is the product's cue that this asset should become searchable. */
-    private final AnalysisDispatchService dispatchService;
-    /** Ledger read model: tells never-dispatched sources apart from failed ones. */
-    private final AnalysisTaskService taskLedger;
-    static final String DEFAULT_ANALYSIS_GOAL = "理解视频核心内容并生成结构化分析报告";
+    private final KnowledgePlacementService placementService;
+    private final KnowledgeIngestJobService ingestJobs;
 
     public KnowledgeSourceService(KnowledgeSourceMapper sourceMapper,
                                   KnowledgeSourceVersionMapper versionMapper,
@@ -75,26 +68,29 @@ public class KnowledgeSourceService {
                                   MediaFileMapper mediaFileMapper,
                                   KnowledgeSpaceService spaceService,
                                   KnowledgeCollectionService collectionService,
-                                  QdrantVectorStore vectorStore,
+                                  KnowledgePlacementService placementService,
                                   KnowledgeAuditService auditService,
-                                  @org.springframework.context.annotation.Lazy AnalysisDispatchService dispatchService,
-                                  AnalysisTaskService taskLedger) {
+                                  KnowledgeIngestJobService ingestJobs) {
         this.sourceMapper = sourceMapper;
         this.versionMapper = versionMapper;
         this.tagMapper = tagMapper;
         this.mediaFileMapper = mediaFileMapper;
         this.spaceService = spaceService;
         this.collectionService = collectionService;
-        this.vectorStore = vectorStore;
+        this.placementService = placementService;
         this.auditService = auditService;
-        this.dispatchService = dispatchService;
-        this.taskLedger = taskLedger;
+        this.ingestJobs = ingestJobs;
     }
 
     @Transactional
     public KnowledgeSource ensureMediaSource(MediaFile media) {
         KnowledgeSource existing = findByMediaId(media.getId());
-        if (existing != null) return existing;
+        if (existing != null) {
+            existing = sourceMapper.lockById(existing.getId());
+            placementService.ensurePrimary(existing);
+            if (STATUS_PENDING.equals(existing.getStatus())) ingestJobs.enqueue(existing);
+            return existing;
+        }
 
         KnowledgeSpace defaultSpace = spaceService.defaultSpaceForUser(media.getUserId());
         KnowledgeSource source = new KnowledgeSource();
@@ -120,6 +116,8 @@ public class KnowledgeSourceService {
         version.setContentHash(media.getContentHash());
         version.setStatus(STATUS_PENDING);
         versionMapper.insert(version);
+        placementService.ensurePrimary(source);
+        ingestJobs.enqueue(source);
         auditService.record(media.getUserId(), "SOURCE_CREATED", "SOURCE", source.getId(), source.getSpaceId(), null,
                 "type=" + SOURCE_TYPE_VIDEO + ";mediaId=" + media.getId());
         return source;
@@ -150,18 +148,14 @@ public class KnowledgeSourceService {
     public List<KnowledgeSourceView> list(Long userId, Long spaceId, Long collectionId, String tag) {
         spaceService.requireOwnedSpace(userId, spaceId);
         if (collectionId != null) collectionService.requireCollectionInSpace(collectionId, spaceId);
+        List<com.example.server.entity.KnowledgePlacement> locations = placementService.inLocation(
+                spaceId, collectionId, collectionId == null && tag != null && !tag.isBlank());
+        if (locations.isEmpty()) return List.of();
+        Map<Long, com.example.server.entity.KnowledgePlacement> bySource = new java.util.LinkedHashMap<>();
+        locations.forEach(p -> bySource.putIfAbsent(p.getSourceId(), p));
         QueryWrapper<KnowledgeSource> query = new QueryWrapper<KnowledgeSource>()
-                .eq("owner_user_id", userId)
-                .eq("space_id", spaceId)
-                .ne("status", STATUS_DELETED)
-                .orderByDesc("updated_at");
-        if (collectionId == null) {
-            // Root-level browsing lists only unfiled sources; a tag search is space-wide
-            // and must not inherit that constraint, otherwise filed sources become invisible.
-            if (tag == null || tag.isBlank()) query.isNull("collection_id");
-        } else {
-            query.eq("collection_id", collectionId);
-        }
+                .eq("owner_user_id", userId).in("id", bySource.keySet())
+                .ne("status", STATUS_DELETED).orderByDesc("updated_at");
         if (tag != null && !tag.isBlank()) {
             List<Long> taggedSourceIds = sourceIdsWithTag(tag.trim());
             if (taggedSourceIds.isEmpty()) return List.of();
@@ -171,7 +165,8 @@ public class KnowledgeSourceService {
         if (sources.isEmpty()) return List.of();
         Map<Long, List<String>> tagsBySource = tagsForSources(sources.stream().map(KnowledgeSource::getId).toList());
         return sources.stream()
-                .map(source -> KnowledgeSourceView.from(source, tagsBySource.getOrDefault(source.getId(), List.of())))
+                .map(source -> KnowledgeSourceView.from(source, tagsBySource.getOrDefault(source.getId(), List.of()))
+                        .at(bySource.get(source.getId())))
                 .toList();
     }
 
@@ -262,104 +257,36 @@ public class KnowledgeSourceService {
         KnowledgeSource source = requireOwnedSource(userId, sourceId);
         Long previousSpaceId = source.getSpaceId();
         Long previousCollectionId = source.getCollectionId();
-        spaceService.requireOwnedSpace(userId, request.spaceId());
-        KnowledgeCollection collection = request.collectionId() == null
-                ? null
-                : collectionService.requireCollectionInSpace(request.collectionId(), request.spaceId());
-        source.setSpaceId(request.spaceId());
-        source.setCollectionId(collection == null ? null : collection.getId());
-        // updateById skips null fields (MyBatis-Plus NOT_NULL strategy), which would
-        // leave a stale collectionId behind when moving to a space's root — exactly the
-        // "ghost source" case. Write location columns explicitly, nulls included.
-        sourceMapper.update(null, new UpdateWrapper<KnowledgeSource>()
-                .eq("id", source.getId())
-                .set("space_id", source.getSpaceId())
-                .set("collection_id", source.getCollectionId()));
-        syncVectorLocation(source);
+        var placement = placementService.movePrimary(userId, source, request);
+        source.setSpaceId(placement.getSpaceId());
+        source.setCollectionId(placement.getCollectionId());
         if (dispatchPending) dispatchIfPending(source);
         auditService.record(userId, "SOURCE_MOVED", "SOURCE", source.getId(), source.getSpaceId(), source.getCollectionId(),
                 "fromSpace=" + previousSpaceId + ";fromCollection=" + previousCollectionId);
-        return KnowledgeSourceView.from(source);
+        return KnowledgeSourceView.from(source).at(placement);
     }
 
-    /**
-     * Filing a source that has no transcript yet (PENDING) auto-starts the default
-     * analysis, so "move into the knowledge base" is the single gesture that makes an
-     * uploaded video searchable. Best-effort: dispatch failure never blocks the move
-     * (the card's Video Agent button remains the manual start path).
-     */
+    /** Filing a pending source ensures a durable knowledge job; no report is requested. */
     private void dispatchIfPending(KnowledgeSource source) {
         if (!STATUS_PENDING.equals(source.getStatus())) return;
         dispatchPending(source, "filing");
     }
 
-    /**
-     * Space-level catch-up for sources that never entered the pipeline: starts the
-     * default analysis for every still-PENDING source with no ledger row. Sources whose
-     * task already FAILED keep their row (the audit trail of what burnt out) and recover
-     * through {@code reindex} from checkpoints instead of a full re-run — re-dispatching
-     * them here would silently re-burn transcription time and report budget.
-     */
+    /** Recover durable knowledge jobs without spending an Agent report budget. */
     public int dispatchPendingInSpace(Long userId, Long spaceId) {
         spaceService.requireOwnedSpace(userId, spaceId);
-        List<KnowledgeSource> pending = sourceMapper.selectList(new QueryWrapper<KnowledgeSource>()
-                .eq("owner_user_id", userId)
-                .eq("space_id", spaceId)
-                .eq("status", STATUS_PENDING));
-        int dispatched = 0;
-        if (!pending.isEmpty()) {
-            Set<Long> mediaIds = pending.stream()
-                    .map(KnowledgeSource::getMediaId)
-                    .collect(Collectors.toSet());
-            var ledgerRows = taskLedger.latestByMediaIds(mediaIds);
-            Set<Long> alreadyDispatched = ledgerRows == null ? Set.of() : ledgerRows.keySet();
-            List<KnowledgeSource> neverDispatched = pending.stream()
-                    .filter(source -> !alreadyDispatched.contains(source.getMediaId()))
-                    .toList();
-            for (KnowledgeSource source : neverDispatched) {
-                if (dispatchPending(source, "space-catch-up")) dispatched += 1;
-            }
-            auditService.record(userId, "SPACE_PENDING_DISPATCHED", "SPACE", spaceId, spaceId, null,
-                    "pending=" + pending.size() + ";neverDispatched=" + neverDispatched.size()
-                            + ";dispatched=" + dispatched);
-        }
-        return dispatched;
+        var ids = placementService.inLocation(spaceId, null, true).stream()
+                .map(com.example.server.entity.KnowledgePlacement::getSourceId).distinct().toList();
+        if (ids.isEmpty()) return 0;
+        var pending = sourceMapper.selectList(new QueryWrapper<KnowledgeSource>()
+                .eq("owner_user_id", userId).in("id", ids).eq("status", STATUS_PENDING));
+        int count = 0;
+        for (KnowledgeSource source : pending) if (dispatchPending(source, "space-catch-up")) count++;
+        return count;
     }
 
     private boolean dispatchPending(KnowledgeSource source, String trigger) {
-        try {
-            MediaFile media = mediaFileMapper.selectById(source.getMediaId());
-            if (media == null) return false;
-            AnalysisDispatchService.SubmissionResult result = dispatchService.submitBulk(
-                    media, DEFAULT_ANALYSIS_GOAL,
-                    com.example.server.dto.AnalysisMode.GENERAL);
-            boolean accepted = result == AnalysisDispatchService.SubmissionResult.ACCEPTED
-                    || result == AnalysisDispatchService.SubmissionResult.DUPLICATE;
-            if (accepted) {
-                log.info("knowledge_filing_dispatched_analysis trigger={} sourceId={} mediaId={} result={}",
-                        trigger, source.getId(), source.getMediaId(), result);
-            } else {
-                log.warn("knowledge_filing_dispatch_rejected trigger={} sourceId={} mediaId={} result={}",
-                        trigger, source.getId(), source.getMediaId(), result);
-            }
-            return accepted;
-        } catch (RuntimeException e) {
-            log.warn("knowledge_filing_dispatch_failed trigger={} sourceId={}", trigger, source.getId(), e);
-            return false;
-        }
-    }
-
-    /**
-     * Keeps the Qdrant ownership payload in step with a move; otherwise the points keep
-     * the old spaceId and silently disappear from space-filtered search. Best-effort:
-     * a vector-store outage must not block an organizational change.
-     */
-    private void syncVectorLocation(KnowledgeSource source) {
-        try {
-            vectorStore.updateSourceLocation(source.getId(), source.getSpaceId(), source.getCollectionId());
-        } catch (RuntimeException e) {
-            log.warn("knowledge_vector_location_sync_failed sourceId={}", source.getId(), e);
-        }
+        return source.getMediaId() != null && ingestJobs.enqueue(source);
     }
 
     @Transactional
@@ -368,6 +295,8 @@ public class KnowledgeSourceService {
                 .eq("owner_user_id", userId)
                 .eq("media_id", mediaId));
         if (source == null || STATUS_DELETED.equals(source.getStatus())) return;
+        ingestJobs.cancel(source.getId());
+        placementService.removeAll(source.getId());
         source.setStatus(STATUS_DELETED);
         sourceMapper.updateById(source);
         auditService.record(userId, "SOURCE_DELETED", "SOURCE", source.getId(), source.getSpaceId(), source.getCollectionId(),
@@ -381,7 +310,8 @@ public class KnowledgeSourceService {
     public void updateIndexStatus(KnowledgeSource source, String status) {
         if (STATUS_DELETED.equals(source.getStatus())) return;
         source.setStatus(status);
-        sourceMapper.updateById(source);
+        sourceMapper.update(null, new UpdateWrapper<KnowledgeSource>().eq("id", source.getId())
+                .ne("status", STATUS_DELETED).set("status", status));
     }
 
     /** Ownership guard shared with the index and search services; throws for missing or foreign sources. */
@@ -413,6 +343,7 @@ public class KnowledgeSourceService {
     /** Records the local file location of an ingested source (path is metadata, never identity). */
     public void registerExternalLocation(Long userId, Long mediaId, String externalPath) {
         KnowledgeSource source = requireSourceByMediaId(mediaId);
+        if (!userId.equals(source.getOwnerUserId())) throw new SecurityException("无权访问该内容源");
         source.setExternalPath(externalPath);
         sourceMapper.updateById(source);
         auditService.record(userId, "SOURCE_PATH_UPDATED", "SOURCE", source.getId(),

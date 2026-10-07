@@ -29,17 +29,17 @@ class KnowledgeSearchServiceTest {
         KnowledgeCollectionService collectionService = mock(KnowledgeCollectionService.class);
         KnowledgeSegmentMapper segmentMapper = mock(KnowledgeSegmentMapper.class);
         KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
-        QdrantVectorStore vectorStore = mock(QdrantVectorStore.class);
+        KnowledgeVectorIndex vectorStore = mock(KnowledgeVectorIndex.class);
         EmbeddingUtils embeddingUtils = mock(EmbeddingUtils.class);
         when(embeddingUtils.embed(any(String.class))).thenReturn(List.of(0.1, 0.2));
-        when(vectorStore.searchKnowledge(any(), anyLong(), anyLong(), any(), anyInt()))
-                .thenReturn(List.of(new QdrantVectorStore.KnowledgeHit("seg-1", 9L, 5L, 0L, 60_000L, 0.91)));
+        when(vectorStore.search(any(), any(), anyInt()))
+                .thenReturn(List.of(new KnowledgeVectorIndex.Hit("seg-1", 9L, 0.91)));
         when(segmentMapper.selectBatchIds(any())).thenReturn(List.of(segment("seg-1")));
         when(sourceMapper.selectById(9L)).thenReturn(source(9L, "课程回放.mp4"));
 
         KnowledgeSearchService service = new KnowledgeSearchService(
                 spaceService, collectionService, segmentMapper, sourceMapper, vectorStore,
-                embeddingUtils, 0.5);
+                embeddingUtils, 0.5, scope(), new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()), Runnable::run);
         List<KnowledgeSearchHit> hits = service.search(
                 7L, new KnowledgeSearchRequest(3L, null, "缓存击穿", 5, "vector"));
 
@@ -59,10 +59,10 @@ class KnowledgeSearchServiceTest {
         KnowledgeCollectionService collectionService = mock(KnowledgeCollectionService.class);
         KnowledgeSegmentMapper segmentMapper = mock(KnowledgeSegmentMapper.class);
         KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
-        QdrantVectorStore vectorStore = mock(QdrantVectorStore.class);
+        KnowledgeVectorIndex vectorStore = mock(KnowledgeVectorIndex.class);
         EmbeddingUtils embeddingUtils = mock(EmbeddingUtils.class);
         when(embeddingUtils.embed(any(String.class))).thenReturn(List.of(0.1, 0.2));
-        when(vectorStore.searchKnowledge(any(), anyLong(), anyLong(), any(), anyInt()))
+        when(vectorStore.search(any(), any(), anyInt()))
                 .thenThrow(new IllegalStateException("Qdrant down"));
         when(sourceMapper.selectList(any())).thenReturn(List.of(source(9L, "课程回放.mp4")));
         when(sourceMapper.selectById(9L)).thenReturn(source(9L, "课程回放.mp4"));
@@ -70,7 +70,7 @@ class KnowledgeSearchServiceTest {
 
         KnowledgeSearchService service = new KnowledgeSearchService(
                 spaceService, collectionService, segmentMapper, sourceMapper, vectorStore,
-                embeddingUtils, 0.5);
+                embeddingUtils, 0.5, scope(), new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()), Runnable::run);
         List<KnowledgeSearchHit> hits = service.search(
                 7L, new KnowledgeSearchRequest(3L, null, "缓存击穿怎么处理", 5, "hybrid"));
 
@@ -85,13 +85,13 @@ class KnowledgeSearchServiceTest {
         KnowledgeCollectionService collectionService = mock(KnowledgeCollectionService.class);
         KnowledgeSegmentMapper segmentMapper = mock(KnowledgeSegmentMapper.class);
         KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
-        QdrantVectorStore vectorStore = mock(QdrantVectorStore.class);
+        KnowledgeVectorIndex vectorStore = mock(KnowledgeVectorIndex.class);
         EmbeddingUtils embeddingUtils = mock(EmbeddingUtils.class);
         when(embeddingUtils.embed(any(String.class))).thenReturn(List.of(0.1, 0.2));
-        when(vectorStore.searchKnowledge(any(), anyLong(), anyLong(), any(), anyInt()))
+        when(vectorStore.search(any(), any(), anyInt()))
                 .thenReturn(List.of(
-                        new QdrantVectorStore.KnowledgeHit("seg-vec", 9L, 5L, 0L, 60_000L, 0.9),
-                        new QdrantVectorStore.KnowledgeHit("seg-both", 9L, 5L, 60_000L, 120_000L, 0.8)));
+                        new KnowledgeVectorIndex.Hit("seg-vec", 9L, 0.9),
+                        new KnowledgeVectorIndex.Hit("seg-both", 9L, 0.8)));
         when(sourceMapper.selectList(any())).thenReturn(List.of(source(9L, "课程回放.mp4")));
         when(sourceMapper.selectById(9L)).thenReturn(source(9L, "课程回放.mp4"));
         when(segmentMapper.selectList(any())).thenReturn(List.of(segment("seg-both"), segment("seg-kw")));
@@ -100,7 +100,7 @@ class KnowledgeSearchServiceTest {
 
         KnowledgeSearchService service = new KnowledgeSearchService(
                 spaceService, collectionService, segmentMapper, sourceMapper, vectorStore,
-                embeddingUtils, 0.5);
+                embeddingUtils, 0.5, scope(), new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()), Runnable::run);
         List<KnowledgeSearchHit> hits = service.search(
                 7L, new KnowledgeSearchRequest(3L, null, "缓存击穿", 5, "hybrid"));
 
@@ -114,17 +114,17 @@ class KnowledgeSearchServiceTest {
         KnowledgeCollectionService collectionService = mock(KnowledgeCollectionService.class);
         KnowledgeSegmentMapper segmentMapper = mock(KnowledgeSegmentMapper.class);
         KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
-        QdrantVectorStore vectorStore = mock(QdrantVectorStore.class);
+        KnowledgeVectorIndex vectorStore = mock(KnowledgeVectorIndex.class);
         EmbeddingUtils embeddingUtils = mock(EmbeddingUtils.class);
         when(embeddingUtils.embed(any(String.class))).thenReturn(List.of(0.1, 0.2));
-        when(vectorStore.searchKnowledge(any(), anyLong(), anyLong(), any(), anyInt()))
+        when(vectorStore.search(any(), any(), anyInt()))
                 .thenReturn(List.of());
         when(sourceMapper.selectList(any())).thenReturn(List.of(source(9L, "课程回放.mp4")));
         when(segmentMapper.selectList(any())).thenReturn(List.of());
 
         KnowledgeSearchService service = new KnowledgeSearchService(
                 spaceService, collectionService, segmentMapper, sourceMapper, vectorStore,
-                embeddingUtils, 0.5);
+                embeddingUtils, 0.5, scope(), new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()), Runnable::run);
         List<KnowledgeSearchHit> hits = service.search(
                 7L, new KnowledgeSearchRequest(3L, null, "完全无关的问题", 5, "hybrid"));
 
@@ -137,20 +137,20 @@ class KnowledgeSearchServiceTest {
         KnowledgeCollectionService collectionService = mock(KnowledgeCollectionService.class);
         KnowledgeSegmentMapper segmentMapper = mock(KnowledgeSegmentMapper.class);
         KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
-        QdrantVectorStore vectorStore = mock(QdrantVectorStore.class);
+        KnowledgeVectorIndex vectorStore = mock(KnowledgeVectorIndex.class);
         EmbeddingUtils embeddingUtils = mock(EmbeddingUtils.class);
         when(embeddingUtils.embed(any(String.class))).thenReturn(List.of(0.1, 0.2));
-        when(vectorStore.searchKnowledge(any(), anyLong(), anyLong(), any(), anyInt()))
+        when(vectorStore.search(any(), any(), anyInt()))
                 .thenReturn(List.of(
-                        new QdrantVectorStore.KnowledgeHit("seg-strong", 9L, 5L, 0L, 60_000L, 0.61),
-                        new QdrantVectorStore.KnowledgeHit("seg-weak", 9L, 5L, 60_000L, 120_000L, 0.37)));
+                        new KnowledgeVectorIndex.Hit("seg-strong", 9L, 0.61),
+                        new KnowledgeVectorIndex.Hit("seg-weak", 9L, 0.37)));
         when(segmentMapper.selectBatchIds(any())).thenReturn(List.of(
                 segment("seg-strong"), segment("seg-weak")));
         when(sourceMapper.selectById(9L)).thenReturn(source(9L, "课程回放.mp4"));
 
         KnowledgeSearchService service = new KnowledgeSearchService(
                 spaceService, collectionService, segmentMapper, sourceMapper, vectorStore,
-                embeddingUtils, 0.5);
+                embeddingUtils, 0.5, scope(), new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()), Runnable::run);
         List<KnowledgeSearchHit> hits = service.search(
                 7L, new KnowledgeSearchRequest(3L, null, "缓存击穿", 5, "vector"));
 
@@ -159,10 +159,48 @@ class KnowledgeSearchServiceTest {
         assertTrue(hits.get(0).score() >= 0.5);
     }
 
+    @Test
+    void removalDuringRecallCannotLeakEvidenceIntoOldFolder() {
+        var resolver = scope();
+        when(resolver.resolve(any(), any(), any())).thenReturn(
+                new KnowledgeQueryScope(7L, java.util.Map.of(9L, new KnowledgeQueryScope.Generation(11L, 1))),
+                new KnowledgeQueryScope(7L, java.util.Map.of()));
+        var segments = mock(KnowledgeSegmentMapper.class); var sources = mock(KnowledgeSourceMapper.class);
+        when(segments.selectList(any())).thenReturn(List.of(segment("old")));
+        when(sources.selectById(9L)).thenReturn(source(9L, "course"));
+        var service = new KnowledgeSearchService(mock(KnowledgeSpaceService.class), mock(KnowledgeCollectionService.class),
+                segments, sources, mock(KnowledgeVectorIndex.class), mock(EmbeddingUtils.class), 0.5, resolver,
+                new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()), Runnable::run);
+        assertTrue(service.search(7L, new KnowledgeSearchRequest(3L, 4L, "缓存", 5, "keyword")).isEmpty());
+    }
+
+    @Test
+    void publicationDuringRecallKeepsQuerySnapshotReadable() {
+        var resolver = scope();
+        when(resolver.resolve(any(), any(), any())).thenReturn(
+                new KnowledgeQueryScope(7L, java.util.Map.of(9L, new KnowledgeQueryScope.Generation(11L, 1))),
+                new KnowledgeQueryScope(7L, java.util.Map.of(9L, new KnowledgeQueryScope.Generation(12L, 2))));
+        var segments = mock(KnowledgeSegmentMapper.class); var sources = mock(KnowledgeSourceMapper.class);
+        when(segments.selectList(any())).thenReturn(List.of(segment("old")));
+        when(sources.selectById(9L)).thenReturn(source(9L, "course"));
+        var service = new KnowledgeSearchService(mock(KnowledgeSpaceService.class), mock(KnowledgeCollectionService.class),
+                segments, sources, mock(KnowledgeVectorIndex.class), mock(EmbeddingUtils.class), 0.5, resolver,
+                new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()), Runnable::run);
+        assertEquals(1, service.search(7L, new KnowledgeSearchRequest(3L, 4L, "缓存", 5, "keyword")).size());
+    }
+
+    private static KnowledgeScopeResolver scope() {
+        var resolver = mock(KnowledgeScopeResolver.class);
+        when(resolver.resolve(any(), any(), any())).thenReturn(new KnowledgeQueryScope(7L,
+                java.util.Map.of(9L, new KnowledgeQueryScope.Generation(11L, 1))));
+        return resolver;
+    }
+
     private static KnowledgeSegment segment(String id) {
         KnowledgeSegment segment = new KnowledgeSegment();
         segment.setId(id);
         segment.setSourceId(9L);
+        segment.setVersionId(11L);
         segment.setMediaId(5L);
         segment.setStartMs(0L);
         segment.setEndMs(60_000L);
@@ -178,7 +216,7 @@ class KnowledgeSearchServiceTest {
         source.setTitle(title);
         source.setOwnerUserId(7L);
         source.setSpaceId(3L);
-        source.setStatus(KnowledgeSourceService.STATUS_PENDING);
+        source.setStatus(KnowledgeSourceService.STATUS_READY);
         return source;
     }
 }

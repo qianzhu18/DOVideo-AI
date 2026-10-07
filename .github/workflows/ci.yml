@@ -5,6 +5,31 @@ on:
   pull_request:
 
 jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: node scripts/check-doc-links.mjs docs --include-reference --include-archive
+      - run: node scripts/check-doc-links.mjs .
+
+  mcp:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mcp-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: mcp-server/pom.xml
+      - run: ../server/mvnw test
+
   backend:
     runs-on: ubuntu-latest
     defaults:

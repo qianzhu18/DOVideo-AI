@@ -58,7 +58,8 @@ public class DovideoApiClient implements ToolBackend {
     }
 
     @Override
-    public String searchKnowledge(String query, Long spaceId, Integer topK, String strategy) throws Exception {
+    public String searchKnowledge(String query, Long spaceId, Long collectionId, Integer topK, String strategy) throws Exception {
+        if (collectionId != null && spaceId == null) throw new IllegalArgumentException("collectionId requires spaceId");
         JsonNode spaces = call("GET", "/knowledge/spaces", null, true);
         JsonNode spaceArray = spaces.isArray() ? spaces : mapper.createArrayNode();
         if (spaceArray.isEmpty()) return "[]";
@@ -70,17 +71,19 @@ public class DovideoApiClient implements ToolBackend {
         ArrayNode merged = mapper.createArrayNode();
         int scanned = 0;
         for (JsonNode space : spaceArray) {
-            if (scanned++ >= MAX_SPACES_PER_SEARCH) break;
+            if (spaceId == null && scanned++ >= MAX_SPACES_PER_SEARCH) break;
             long candidateSpace = space.path("id").asLong();
             if (spaceId != null && candidateSpace != spaceId) continue;
             ObjectNode request = mapper.createObjectNode();
             request.put("query", query);
             request.put("spaceId", candidateSpace);
+            if (collectionId != null) request.put("collectionId", collectionId);
             request.put("topK", effectiveTopK);
             if (strategy != null && !strategy.isBlank()) request.put("strategy", strategy);
             JsonNode data = call("POST", "/knowledge/search", request.toString(), true);
             for (JsonNode hit : data.isArray() ? data : mapper.createArrayNode()) {
                 ObjectNode item = merged.addObject();
+                item.put("segmentId", hit.path("segmentId").asText());
                 item.put("spaceId", candidateSpace);
                 item.put("spaceName", space.path("name").asText());
                 item.put("title", hit.path("title").asText());
@@ -103,7 +106,15 @@ public class DovideoApiClient implements ToolBackend {
                 if (excerpt != null) item.put("excerpt", trim(excerpt, 400));
             }
         }
-        return merged.toString();
+        // The same content may be referenced in several spaces; expose each evidence segment once.
+        var unique = new java.util.LinkedHashMap<String, JsonNode>();
+        merged.forEach(hit -> unique.merge(hit.path("segmentId").asText(), hit,
+                (a, b) -> a.path("score").asDouble() >= b.path("score").asDouble() ? a : b));
+        ArrayNode result = mapper.createArrayNode();
+        unique.values().stream().sorted(java.util.Comparator.comparingDouble(
+                (JsonNode hit) -> hit.path("score").asDouble()).reversed())
+                .limit(Math.max(1, Math.min(20, effectiveTopK))).forEach(result::add);
+        return result.toString();
     }
 
     @Override
@@ -128,6 +139,12 @@ public class DovideoApiClient implements ToolBackend {
         if (topK != null) request.put("topK", topK);
         if (strategy != null && !strategy.isBlank()) request.put("strategy", strategy);
         return compactAnswer(call("POST", "/knowledge/ask", request.toString(), true));
+    }
+
+    @Override
+    public String knowledgeCatalog(Long spaceId) throws Exception {
+        if (spaceId == null) throw new IllegalArgumentException("knowledge catalog requires spaceId");
+        return call("GET", "/knowledge/spaces/" + spaceId + "/catalog", null, true).toString();
     }
 
     @Override

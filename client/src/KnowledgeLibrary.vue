@@ -11,8 +11,8 @@
       <header class="knowledge-heading">
         <div>
           <p class="eyebrow">PERSONAL VIDEO INDEX</p>
-          <h1 id="knowledge-title">知识库资产层</h1>
-          <p>组织视频来源，为后续跨视频检索、证据回填和 MCP 接入建立稳定边界。</p>
+          <h1 id="knowledge-title">视频知识库</h1>
+          <p>把课程、分享和学习笔记归入多个学习主题，跨视频查找知识，回看原片证据。</p>
         </div>
         <div class="knowledge-summary" aria-label="当前空间摘要">
           <span><b>{{ spaces.length }}</b> spaces</span>
@@ -143,7 +143,7 @@
               {{ mcpEndpoint }}
             </button>
             <button type="button" class="mcp-config" title="点击复制客户端配置" @click="copyText(mcpClientConfig, '客户端配置已复制')">{{ mcpClientConfig }}</button>
-            <p class="mcp-hint">将 <code>&lt;令牌&gt;</code> 换成服务端 <code>.env</code> 里 <code>MCP_CLIENT_TOKENS</code> 配置的值；显示离线时先运行 <code>./scripts/dev-up.sh</code>。三个只读工具：列空间 / 跨视频搜证据 / 取原始转写。</p>
+            <p class="mcp-hint">连接令牌由管理员提供。支持空间列表、目录发现、跨视频检索、引用问答和原文证据。</p>
           </div>
 
           <div class="rail-divider"></div>
@@ -303,7 +303,7 @@
                 <div class="search-hit-meta">
                   <strong :title="hit.title">{{ hit.title }}</strong>
                   <span class="search-hit-time">{{ formatMs(hit.startMs) }} – {{ formatMs(hit.endMs) }}</span>
-                  <span class="search-hit-kind">{{ hit.sourceType === 'SCRIPT' ? '脚本' : '视频' }}·{{ hit.matchType === 'vector' ? '语义' : '关键词' }}</span>
+                  <span class="search-hit-kind">{{ hit.sourceType === 'SCRIPT' ? '脚本' : '视频' }}·{{ ({ vector: '语义', keyword: '关键词', hybrid: '混合检索' })[hit.matchType] || hit.matchType }}</span>
                 </div>
                 <p>{{ hit.transcript || hit.ocrText || hit.summary }}</p>
               </li>
@@ -323,7 +323,7 @@
               class="source-row"
               :class="{ 'is-dragging': draggingSource?.id === source.id }"
               draggable="true"
-              :title="`按住拖到左侧空间或目录即可归类（${source.title}）`"
+              :title="`拖动以移动，按住 Option / Alt 拖动可同时归入另一目录（${source.title}）`"
               @dragstart="onSourceDragStart($event, source)"
               @dragend="onSourceDragEnd"
             >
@@ -406,12 +406,14 @@
                 @click="reindexSource(source)"
               >{{ recoveringId === source.id ? '恢复中…' : '重新解析' }}</button>
               <button type="button" class="source-move" @click="openMove(source)">移动</button>
+              <button type="button" class="source-move" @click="openMove(source, 'reference')">同时归入…</button>
+              <button v-if="source.placementId" type="button" class="source-move" @click="removeReference(source)">移除此处引用</button>
             </li>
           </ul>
 
           <form v-if="movingSource" class="move-tray" @submit.prevent="moveSource">
             <div>
-              <p>移动来源</p>
+              <p>{{ locationMode === 'reference' ? '同时归入另一目录（共享同一份内容）' : '移动当前目录中的引用' }}</p>
               <strong>{{ movingSource.title }}</strong>
             </div>
             <label>目标空间
@@ -427,7 +429,7 @@
             </label>
             <div class="move-actions">
               <button type="button" @click="closeMove">取消</button>
-              <button class="lime-button" :disabled="saving">确认移动</button>
+              <button class="lime-button" :disabled="saving">{{ locationMode === 'reference' ? '添加引用' : '确认移动' }}</button>
             </div>
           </form>
         </section>
@@ -457,13 +459,13 @@ const taskStates = ref({})
 // 每个源的真实入库状态：以台账为准——没有台账记录=从未投递，失败必须带原因示人，
 // 不允许把"没投递"和"失败"伪装成"排队"。
 const ingestStateOf = source => {
+  const task = taskStates.value[source.mediaId]
+  // A failed rebuild keeps the published source READY, but its job failure remains visible.
+  if (task?.state === 'PROCESSING') return 'PARSING'
+  if (task?.state === 'QUEUED') return 'QUEUED'
+  if (task?.state === 'FAILED') return 'FAILED'
   if (source.status === 'READY' || source.status === 'FAILED') return source.status
   if (source.status && source.status !== 'PENDING') return source.status
-  const task = taskStates.value[source.mediaId]
-  if (!task) return 'NO_JOB'
-  if (task.state === 'FAILED') return 'FAILED'
-  if (task.state === 'PROCESSING') return 'PARSING'
-  if (task.state === 'QUEUED') return 'QUEUED'
   return 'NO_JOB'
 }
 const noJobCount = computed(() => sources.value.filter(s => ingestStateOf(s) === 'NO_JOB').length)
@@ -499,26 +501,12 @@ const liveStatus = source => {
   return state === 'PARSING' ? 'ANALYZING' : state
 }
 const liveStage = source => {
-  if (source.status === 'FAILED') return '索引失败，可重新解析'
-  if (source.status !== 'PENDING') return null
-  const state = ingestStateOf(source)
-  if (state === 'NO_JOB') return '尚未投递解析任务'
   const task = taskStates.value[source.mediaId]
-  if (!task) return null
-  if (task.state === 'FAILED') {
-    return task.errorType === 'BudgetExceeded'
-      ? '解析失败：报告预算耗尽（转写已保留，重新解析可直接补索引）'
-      : `解析失败：${task.errorType || '未知原因'}`
-  }
-  if (task.state === 'QUEUED') return '排队等待解析'
-  const stageText = {
-    VIDEO_CONTEXT: '转写+画面识别中',
-    CHUNK_SUMMARY: '分块摘要中',
-    PLANNER: '规划分析中',
-    AGENT_LOOP: '生成分析报告中',
-    EXECUTOR: '生成分析报告中',
-  }[task.latestStage]
-  return stageText || null
+  if (task?.state === 'FAILED') return `${source.status === 'READY' ? '重建失败，原版本仍可检索' : '入库失败'}：${task.errorMessage || '可重新解析'}`
+  if (task?.state === 'QUEUED') return task.errorMessage || '等待知识入库'
+  if (task?.state === 'PROCESSING') return task.stage === 'INDEXING' ? '分块与向量化中' : '转写与画面识别中'
+  if (ingestStateOf(source) === 'NO_JOB') return '尚未创建知识入库任务'
+  return null
 }
 let progressTimer = null
 let sawRunningTask = false
@@ -529,12 +517,17 @@ const stopProgressPolling = () => {
 const startProgressPolling = () => {
   if (progressTimer) return
   progressTimer = setInterval(async () => {
-    if (!selectedSpaceId.value || pendingCount.value === 0) { stopProgressPolling(); return }
+    if (!selectedSpaceId.value || !sources.value.some(s => ['NO_JOB', 'QUEUED', 'PARSING'].includes(ingestStateOf(s)))) { stopProgressPolling(); return }
     try {
+      const spaceId = selectedSpaceId.value
+      const collectionId = selectedCollectionId.value
+      const tag = tagFilter.value
       const [freshSources, tasks] = await Promise.all([
-        request(`/knowledge/sources?spaceId=${selectedSpaceId.value}`),
-        request('/analysis/tasks'),
+        request(`/knowledge/sources?${new URLSearchParams({ spaceId,
+          ...(collectionId == null ? {} : { collectionId }), ...(tag ? { tag } : {}) })}`),
+        request('/knowledge/ingest-jobs'),
       ])
+      if (spaceId !== selectedSpaceId.value || collectionId !== selectedCollectionId.value || tag !== tagFilter.value) return
       sources.value = freshSources
       const mediaIds = new Set(freshSources.map(s => s.mediaId))
       taskStates.value = Object.fromEntries(
@@ -548,7 +541,7 @@ const startProgressPolling = () => {
       } else if (sawRunningTask) {
         stopProgressPolling()
         const failedSources = freshSources.filter(s => ingestStateOf(s) === 'FAILED')
-        const unresolved = await autoRecoverFailed(failedSources)
+        const unresolved = failedSources.length
         const readyNow = freshSources.filter(s => s.status === 'READY').length
         notice.value = unresolved > 0
           ? `解析批次结束：${readyNow} 个已入库，${unresolved} 个未能自动恢复（卡片上可重新解析）`
@@ -573,6 +566,7 @@ const collectionComposerOpen = ref(false)
 const collectionParentId = ref(null)
 const newCollectionName = ref('')
 const movingSource = ref(null)
+const locationMode = ref('move')
 const moveSpaceId = ref(null)
 // 访达式归类：源卡片可拖动，左侧空间/目录是 drop 目标。
 const draggingSource = ref(null)
@@ -607,7 +601,7 @@ const scriptComposerOpen = ref(false)
 const newScriptTitle = ref('')
 const newScriptContent = ref('')
 const mcpAlive = ref(null)
-const mcpEndpoint = computed(() => `${location.protocol}//${location.hostname}:9091/mcp`)
+const mcpEndpoint = computed(() => import.meta.env.VITE_MCP_ENDPOINT || `${location.protocol}//${location.hostname}:9091/mcp`)
 const mcpClientConfig = computed(() =>
   JSON.stringify({ mcpServers: { 'dovideo-knowledge': { url: mcpEndpoint.value, headers: { Authorization: 'Bearer <令牌>' } } } }, null, 2))
 
@@ -802,7 +796,7 @@ async function analyzePending() {
 }
 
 async function syncTaskStates() {
-  const tasks = await request('/analysis/tasks')
+  const tasks = await request('/knowledge/ingest-jobs')
   const mediaIds = new Set(sources.value.map(s => s.mediaId))
   taskStates.value = Object.fromEntries(
     (tasks || []).filter(t => mediaIds.has(t.mediaId)).map(t => [t.mediaId, t]))
@@ -826,23 +820,9 @@ async function autoCatchUp() {
         startProgressPolling()
       }
     }
-    const failedSources = sources.value.filter(s => ingestStateOf(s) === 'FAILED')
-    if (failedSources.length > 0) await autoRecoverFailed(failedSources)
   } catch {
     // 自动兜底失败不打断浏览：汇总条会如实显示未投递/失败，下次进来再自愈。
   }
-}
-
-async function autoRecoverFailed(failedSources) {
-  let recovered = 0
-  for (const failedSource of failedSources) {
-    try {
-      await request(`/knowledge/sources/${failedSource.id}/reindex`, { method: 'POST' })
-      recovered += 1
-    } catch { /* 无存档可恢复时保持失败，卡片上可手动重新解析 */ }
-  }
-  if (recovered > 0) await refreshCurrent()
-  return failedSources.length - recovered
 }
 
 const recoveringId = ref(null)
@@ -851,11 +831,13 @@ async function reindexSource(source) {
   recoveringId.value = source.id
   error.value = ''
   try {
-    await request(`/knowledge/sources/${source.id}/reindex`, { method: 'POST' })
-    notice.value = `“${source.title}”已从保留的转写存档直接补索引（未重烧转写）`
+    const queued = await request(`/knowledge/ingest-jobs/sources/${source.id}/retry`, { method: 'POST' })
+    if (!queued) throw new Error('这份内容无法重新进入视频入库队列；文本来源请重新导入')
+    notice.value = `“${source.title}”已重新进入知识入库队列；已有转写会复用`
+    startProgressPolling()
     await refreshCurrent()
   } catch (cause) {
-    error.value = cause.message || '补索引失败：该视频可能没有可用存档，可用卡片的 Video Agent 重新完整解析'
+    error.value = cause.message || '创建知识入库任务失败'
   } finally {
     recoveringId.value = null
   }
@@ -927,7 +909,8 @@ async function createCollection() {
   }
 }
 
-function openMove(source) {
+function openMove(source, mode = 'move') {
+  locationMode.value = mode
   movingSource.value = source
   moveSpaceId.value = source.spaceId
   moveCollectionId.value = source.collectionId
@@ -956,12 +939,17 @@ async function moveSource() {
   saving.value = true
   error.value = ''
   try {
-    const moved = await request(`/knowledge/sources/${movingSource.value.id}/location`, {
-      method: 'PATCH',
+    const source = movingSource.value
+    const add = locationMode.value === 'reference'
+    const path = add ? `/knowledge/sources/${source.id}/placements`
+      : source.placementId ? `/knowledge/sources/${source.id}/placements/${source.placementId}`
+      : `/knowledge/sources/${source.id}/location`
+    await request(path, {
+      method: add ? 'POST' : 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ spaceId: moveSpaceId.value, collectionId: moveCollectionId.value })
     })
-    notice.value = `已移动“${moved.title}”`
+    notice.value = add ? `“${source.title}”已同时归入目标目录，共享原有索引` : `已移动“${source.title}”的当前引用`
     closeMove()
     await refreshCurrent()
   } catch (cause) {
@@ -976,7 +964,7 @@ async function moveSource() {
 function onSourceDragStart(event, source) {
   draggingSource.value = source
   if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.effectAllowed = 'copyMove'
     event.dataTransfer.setData('text/plain', String(source.id))
   }
 }
@@ -1004,18 +992,34 @@ async function dropSource(event, spaceId, collectionId) {
   saving.value = true
   error.value = ''
   try {
-    const moved = await request(`/knowledge/sources/${source.id}/location`, {
-      method: 'PATCH',
+    const add = event.altKey
+    const path = add ? `/knowledge/sources/${source.id}/placements`
+      : source.placementId ? `/knowledge/sources/${source.id}/placements/${source.placementId}`
+      : `/knowledge/sources/${source.id}/location`
+    await request(path, {
+      method: add ? 'POST' : 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ spaceId, collectionId: collectionId ?? null })
     })
-    notice.value = `已把“${moved.title}”归类到目标位置`
+    notice.value = add ? `已将“${source.title}”同时归入目标位置` : `已移动“${source.title}”的当前引用`
     await refreshCurrent()
   } catch (cause) {
     error.value = cause.message || '拖拽归类失败'
   } finally {
     saving.value = false
   }
+}
+
+async function removeReference(source) {
+  if (saving.value) return
+  saving.value = true
+  error.value = ''
+  try {
+    await request(`/knowledge/sources/${source.id}/placements/${source.placementId}`, { method: 'DELETE' })
+    notice.value = `已移除“${source.title}”在此处的引用；其他目录仍保留`
+    await refreshCurrent()
+  } catch (cause) { error.value = cause.message || '移除引用失败，请保留至少一个归属' }
+  finally { saving.value = false }
 }
 
 function applyTagFilter() {
@@ -1034,7 +1038,12 @@ async function searchKnowledge() {
     const hits = await request('/knowledge/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ spaceId: selectedSpaceId.value, query, topK: 8 })
+      body: JSON.stringify({
+        spaceId: selectedSpaceId.value,
+        collectionId: selectedCollectionId.value,
+        query,
+        topK: 8
+      })
     })
     searchResults.value = hits
     searched.value = true
@@ -1063,7 +1072,13 @@ async function askKnowledge() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
-      body: JSON.stringify({ spaceId: selectedSpaceId.value, query, topK: 8, strategy: 'hybrid' })
+      body: JSON.stringify({
+        spaceId: selectedSpaceId.value,
+        collectionId: selectedCollectionId.value,
+        query,
+        topK: 8,
+        strategy: 'hybrid'
+      })
     })
     if (!response.ok) throw new Error((await response.text()) || '知识库回答失败，请稍后重试')
     if (!response.body) throw new Error('当前浏览器不支持流式回答')

@@ -29,8 +29,8 @@ import java.util.stream.Stream;
 /**
  * Local-directory ingest (P3): turns an authorized filesystem folder into knowledge
  * assets. Identity is content (MD5), not path, so moves are metadata-only and only
- * changed content re-enters the analysis pipeline. The scan plan is always persisted as
- * the import manifest; applying it enqueues analysis through the same MQ pipeline as
+ * changed content re-enters the knowledge pipeline. The scan plan is always persisted as
+ * the import manifest; applying it persists independent knowledge jobs just like
  * manual uploads.
  */
 @Service
@@ -39,12 +39,8 @@ public class KnowledgeIngestService {
     private static final org.slf4j.Logger log =
             org.slf4j.LoggerFactory.getLogger(KnowledgeIngestService.class);
 
-    /** Default analysis goal for ingested videos; same shape as a manual workspace run. */
-    static final String DEFAULT_INGEST_GOAL = "完整解析这个视频的内容，提取带时间戳的要点";
-
     private final KnowledgeSourceService sourceService;
     private final MediaService mediaService;
-    private final AnalysisDispatchService dispatchService;
     private final KnowledgeAuditService auditService;
     private final KnowledgeIngestScanMapper scanMapper;
     private final MinioUtils minioUtils;
@@ -52,14 +48,12 @@ public class KnowledgeIngestService {
 
     public KnowledgeIngestService(KnowledgeSourceService sourceService,
                                   MediaService mediaService,
-                                  AnalysisDispatchService dispatchService,
                                   KnowledgeAuditService auditService,
                                   KnowledgeIngestScanMapper scanMapper,
                                   MinioUtils minioUtils,
                                   @Value("${knowledge.ingest.allowed-roots:}") String allowedRoots) {
         this.sourceService = sourceService;
         this.mediaService = mediaService;
-        this.dispatchService = dispatchService;
         this.auditService = auditService;
         this.scanMapper = scanMapper;
         this.minioUtils = minioUtils;
@@ -130,12 +124,9 @@ public class KnowledgeIngestService {
         MediaFile media = mediaService.saveUploadedMedia(file.getName(), fileUrl, userId, md5);
         moveIntoTarget(userId, media.getId(), request);
         sourceService.registerExternalLocation(userId, media.getId(), action.path());
-        if (request.analyze() == null || request.analyze()) {
-            dispatch(media);
-        } else {
-            log.info("knowledge_ingest_skip_analysis mediaId={} path={} (analyze=false)",
-                    media.getId(), action.path());
-        }
+        // The legacy analyze flag no longer requests a report. All accepted media have a
+        // durable knowledge job; optional reports are started explicitly in Video Agent.
+
     }
 
     private void applyChanged(Long userId, KnowledgeIngestRequest request,
@@ -153,15 +144,6 @@ public class KnowledgeIngestService {
         sourceService.requireOwnedSource(userId, action.sourceId());
         String title = Path.of(action.path()).getFileName().toString();
         sourceService.renameSource(userId, action.sourceId(), title, action.path());
-    }
-
-    private void dispatch(MediaFile media) {
-        try {
-            dispatchService.submitBulk(media, DEFAULT_INGEST_GOAL,
-                    com.example.server.dto.AnalysisMode.GENERAL);
-        } catch (RuntimeException e) {
-            log.warn("knowledge_ingest_dispatch_failed mediaId={}", media.getId(), e);
-        }
     }
 
     private void moveIntoTarget(Long userId, Long mediaId, KnowledgeIngestRequest request) {

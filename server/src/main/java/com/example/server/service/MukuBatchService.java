@@ -300,11 +300,13 @@ public class MukuBatchService {
                         new KnowledgeSourceLocationRequest(spaceId, collectionId));
             }
             String goal = cleanGoal(String.valueOf(batch.getOrDefault("analysisGoal", "")));
-            AnalysisDispatchService.SubmissionResult submission = dispatchService.submitBulk(
-                    media, goal.isBlank() ? DEFAULT_GOAL : goal, AnalysisMode.GENERAL);
-            if (submission != AnalysisDispatchService.SubmissionResult.ACCEPTED
-                    && submission != AnalysisDispatchService.SubmissionResult.DUPLICATE) {
-                throw new IllegalStateException("视频已上传，但解析任务未能提交：" + submission);
+            if (!goal.isBlank()) {
+                var submission = dispatchService.submitBulk(media, goal, AnalysisMode.GENERAL);
+                if (submission != AnalysisDispatchService.SubmissionResult.ACCEPTED
+                        && submission != AnalysisDispatchService.SubmissionResult.DUPLICATE) {
+                    // Knowledge has its own durable job; optional report failure does not fail import.
+                    item.put("reportWarning", "报告未提交：" + submission);
+                }
             }
             item.put("mediaId", media.getId());
             item.put("state", "SUBMITTED");

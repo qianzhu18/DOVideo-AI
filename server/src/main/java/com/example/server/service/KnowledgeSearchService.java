@@ -43,7 +43,10 @@ public class KnowledgeSearchService {
     private final KnowledgeCollectionService collectionService;
     private final KnowledgeSegmentMapper segmentMapper;
     private final KnowledgeSourceMapper sourceMapper;
-    private final QdrantVectorStore vectorStore;
+    private final KnowledgeVectorIndex vectorStore;
+    private final KnowledgeScopeResolver scopes;
+    private final KnowledgeMetrics metrics;
+    private final java.util.concurrent.Executor executor;
     private final EmbeddingUtils embeddingUtils;
     /**
      * Minimum cosine similarity for a vector hit to be surfaced. Golden-set tuning on the
@@ -57,9 +60,10 @@ public class KnowledgeSearchService {
                                   KnowledgeCollectionService collectionService,
                                   KnowledgeSegmentMapper segmentMapper,
                                   KnowledgeSourceMapper sourceMapper,
-                                  QdrantVectorStore vectorStore,
+                                  KnowledgeVectorIndex vectorStore,
                                   EmbeddingUtils embeddingUtils,
-                                  @Value("${knowledge.search.min-vector-score:0.45}") double minVectorScore) {
+                                  @Value("${knowledge.search.min-vector-score:0.45}") double minVectorScore, KnowledgeScopeResolver scopes, KnowledgeMetrics metrics,
+                                  @org.springframework.beans.factory.annotation.Qualifier("knowledgeRetrievalExecutor") java.util.concurrent.Executor executor) {
         this.spaceService = spaceService;
         this.collectionService = collectionService;
         this.segmentMapper = segmentMapper;
@@ -67,54 +71,63 @@ public class KnowledgeSearchService {
         this.vectorStore = vectorStore;
         this.embeddingUtils = embeddingUtils;
         this.minVectorScore = minVectorScore;
+        this.scopes = scopes;
+        this.metrics = metrics;
+        this.executor = executor;
     }
 
     public List<KnowledgeSearchHit> search(Long userId, KnowledgeSearchRequest request) {
-        spaceService.requireOwnedSpace(userId, request.spaceId());
-        if (request.collectionId() != null) {
-            collectionService.requireCollectionInSpace(request.collectionId(), request.spaceId());
-        }
+        return metrics.measure("search." + normalizeStrategy(request.strategy()), () -> doSearch(userId, request));
+    }
+
+    private List<KnowledgeSearchHit> doSearch(Long userId, KnowledgeSearchRequest request) {
+        KnowledgeQueryScope scope = scopes.resolve(userId, request.spaceId(), request.collectionId());
+        if (scope.generations().isEmpty()) return List.of();
         int topK = normalizeTopK(request.topK());
         String query = request.query().trim();
 
-        List<Recalled> recalled = recall(userId, request, query, topK);
-        return backfill(recalled);
+        List<Recalled> recalled = recall(scope, request, query, topK);
+        return backfill(recalled, userId, request, scope);
     }
 
-    private List<Recalled> recall(Long userId, KnowledgeSearchRequest request, String query, int topK) {
+    private List<Recalled> recall(KnowledgeQueryScope scope, KnowledgeSearchRequest request, String query, int topK) {
         String strategy = normalizeStrategy(request.strategy());
         return switch (strategy) {
-            case STRATEGY_VECTOR -> vectorRecall(userId, request, query, topK);
-            case STRATEGY_KEYWORD -> keywordRecall(userId, request, query, topK);
-            default -> hybridRecall(userId, request, query, topK);
+            case STRATEGY_VECTOR -> vectorRecall(scope, request, query, topK);
+            case STRATEGY_KEYWORD -> keywordRecall(scope, request, query, topK);
+            default -> hybridRecall(scope, request, query, topK);
         };
     }
 
-    private List<Recalled> vectorRecall(Long userId, KnowledgeSearchRequest request, String query, int topK) {
+    private List<Recalled> vectorRecall(KnowledgeQueryScope scope, KnowledgeSearchRequest request, String query, int topK) {
         List<Double> queryEmbedding = embed(query);
         if (queryEmbedding.isEmpty()) return List.of();
         try {
-            List<QdrantVectorStore.KnowledgeHit> hits = vectorStore
-                    .searchKnowledge(queryEmbedding, userId, request.spaceId(),
-                            request.collectionId(), topK)
+            List<KnowledgeVectorIndex.Hit> hits = vectorStore
+                    .search(queryEmbedding, scope, topK)
                     .stream()
                     .filter(hit -> hit.score() >= minVectorScore)
                     .toList();
-            return backfillBySegmentId(hits);
+            return backfillBySegmentId(hits, scope);
         } catch (RuntimeException e) {
+            metrics.count("vector_recall_failed");
             return List.of();
         }
     }
 
     /**
      * Recalls from both channels and fuses with Reciprocal Rank Fusion: a segment found by
-     * both channels outranks ones found by either alone, which makes the hybrid strategy
-     * strictly more robust than either single channel.
+     * both channels outranks ones found by either alone, the quality improvement must be measured
+     * on a fixed corpus; fusion alone does not guarantee better retrieval.
      */
-    private List<Recalled> hybridRecall(Long userId, KnowledgeSearchRequest request, String query, int topK) {
+    private List<Recalled> hybridRecall(KnowledgeQueryScope scope, KnowledgeSearchRequest request, String query, int topK) {
         int recallLimit = topK * RECALL_MULTIPLIER;
-        List<Recalled> vectorHits = vectorRecall(userId, request, query, recallLimit);
-        List<Recalled> keywordHits = keywordRecall(userId, request, query, recallLimit);
+        var vectorFuture = java.util.concurrent.CompletableFuture.supplyAsync(
+                () -> metrics.measure("recall.vector", () -> vectorRecall(scope, request, query, recallLimit)), executor);
+        var keywordFuture = java.util.concurrent.CompletableFuture.supplyAsync(
+                () -> metrics.measure("recall.keyword", () -> keywordRecall(scope, request, query, recallLimit)), executor);
+        List<Recalled> vectorHits = vectorFuture.join();
+        List<Recalled> keywordHits = keywordFuture.join();
 
         Map<String, Recalled> bySegment = new LinkedHashMap<>();
         vectorHits.forEach(hit -> bySegment.put(hit.segment().getId(), hit));
@@ -147,23 +160,15 @@ public class KnowledgeSearchService {
         };
     }
 
-    private List<Recalled> keywordRecall(Long userId, KnowledgeSearchRequest request, String query, int topK) {
-        List<Long> sourceIds = sourceMapper.selectList(new QueryWrapper<KnowledgeSource>()
-                        .select("id")
-                        .eq("owner_user_id", userId)
-                        .eq("space_id", request.spaceId())
-                        .ne("status", KnowledgeSourceService.STATUS_DELETED)
-                        .eq(request.collectionId() != null, "collection_id", request.collectionId()))
-                .stream().map(KnowledgeSource::getId).toList();
-        if (sourceIds.isEmpty()) return List.of();
-
+    private List<Recalled> keywordRecall(KnowledgeQueryScope scope, KnowledgeSearchRequest request, String query, int topK) {
+        var versionIds = scope.generations().values().stream().map(KnowledgeQueryScope.Generation::versionId).toList();
         List<String> needles = terms(query).stream().map(KnowledgeSearchService::needle).distinct().toList();
         if (needles.isEmpty()) return List.of();
 
         // Recall is per-needle substring match (ANY), then ranked in memory by how many
         // distinct needles a segment covers, so natural-language questions still find evidence.
         List<KnowledgeSegment> matched = segmentMapper.selectList(new QueryWrapper<KnowledgeSegment>()
-                .in("source_id", sourceIds)
+                .in("version_id", versionIds)
                 .and(wrapper -> {
                     boolean first = true;
                     for (String needle : needles) {
@@ -200,23 +205,25 @@ public class KnowledgeSearchService {
         return needles.isEmpty() ? 0 : (double) covered / needles.size();
     }
 
-    private List<Recalled> backfillBySegmentId(List<QdrantVectorStore.KnowledgeHit> hits) {
+    private List<Recalled> backfillBySegmentId(List<KnowledgeVectorIndex.Hit> hits, KnowledgeQueryScope scope) {
         if (hits.isEmpty()) return List.of();
-        List<String> segmentIds = hits.stream().map(QdrantVectorStore.KnowledgeHit::segmentId).toList();
+        List<String> segmentIds = hits.stream().map(KnowledgeVectorIndex.Hit::segmentId).toList();
         Map<String, KnowledgeSegment> byId = new LinkedHashMap<>();
         for (KnowledgeSegment segment : segmentMapper.selectBatchIds(segmentIds)) {
             byId.put(segment.getId(), segment);
         }
         List<Recalled> ordered = new ArrayList<>(hits.size());
-        for (QdrantVectorStore.KnowledgeHit hit : hits) {
+        for (KnowledgeVectorIndex.Hit hit : hits) {
             KnowledgeSegment segment = byId.get(hit.segmentId());
-            if (segment != null) ordered.add(new Recalled(segment, hit.score(), "vector"));
+            if (segment != null && java.util.Objects.equals(hit.sourceId(), segment.getSourceId())
+                    && scope.contains(segment.getSourceId(), segment.getVersionId())) ordered.add(new Recalled(segment, hit.score(), "vector"));
         }
         return ordered;
     }
 
-    private List<KnowledgeSearchHit> backfill(List<Recalled> recalled) {
+    private List<KnowledgeSearchHit> backfill(List<Recalled> recalled, Long userId, KnowledgeSearchRequest request, KnowledgeQueryScope snapshot) {
         if (recalled.isEmpty()) return List.of();
+        KnowledgeQueryScope currentScope = scopes.resolve(userId, request.spaceId(), request.collectionId());
         Map<Long, KnowledgeSource> sources = new LinkedHashMap<>();
         for (Recalled candidate : recalled) {
             Long sourceId = candidate.segment().getSourceId();
@@ -228,7 +235,9 @@ public class KnowledgeSearchService {
         List<KnowledgeSearchHit> hits = new ArrayList<>(recalled.size());
         for (Recalled candidate : recalled) {
             KnowledgeSource source = sources.get(candidate.segment().getSourceId());
-            if (source == null) continue;
+            if (source == null || !userId.equals(source.getOwnerUserId()) || !"READY".equals(source.getStatus())
+                    || !currentScope.generations().containsKey(source.getId())
+                    || !snapshot.contains(source.getId(), candidate.segment().getVersionId())) continue;
             KnowledgeSegment segment = candidate.segment();
             hits.add(new KnowledgeSearchHit(
                     segment.getId(),
@@ -263,7 +272,7 @@ public class KnowledgeSearchService {
 
     private List<Double> embed(String text) {
         try {
-            return embeddingUtils.embed(text);
+            return metrics.measure("query.embedding", () -> embeddingUtils.embed(text));
         } catch (RuntimeException e) {
             return List.of();
         }

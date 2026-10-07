@@ -9,7 +9,6 @@ import com.example.server.service.AiService;
 import com.example.server.service.AgentCheckpointService;
 import com.example.server.service.AgentLoopService;
 import com.example.server.service.FailedAnalysisTaskService;
-import com.example.server.service.KnowledgeSegmentIndexService;
 import com.example.server.service.MediaService;
 import com.example.server.service.TaskEventService;
 import com.example.server.service.task.AnalysisTaskService;
@@ -69,7 +68,6 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> 
     private final TaskEventService taskEventService;
     private final AnalysisTaskService taskLedger;
     private final String deadLetterTopic;
-    private final KnowledgeSegmentIndexService segmentIndexService;
 
     public VideoAnalysisConsumer(AiService aiService,
                                  RedissonClient redissonClient,
@@ -80,7 +78,6 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> 
                                  MediaService mediaService,
                                  TaskEventService taskEventService,
                                  AnalysisTaskService taskLedger,
-                                 KnowledgeSegmentIndexService segmentIndexService,
                                  @Value("${rocketmq.topic.video-analysis-dead:video-analysis-dead-topic}")
                                  String deadLetterTopic) {
         this.aiService = aiService;
@@ -92,7 +89,6 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> 
         this.mediaService = mediaService;
         this.taskEventService = taskEventService;
         this.taskLedger = taskLedger;
-        this.segmentIndexService = segmentIndexService;
         this.deadLetterTopic = deadLetterTopic;
     }
 
@@ -186,7 +182,6 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> 
                     TaskStage.BUDGET_EXHAUSTED);
             // 索引先行后源可能已 READY（转写/向量完好）；只有索引也没完成的源才标记
             // FAILED，让知识库视图诚实呈现并允许从 checkpoint 自动恢复。
-            segmentIndexService.markIndexFailed(mediaId, "BUDGET_EXHAUSTED: " + e.getMessage());
             log.warn("video_analysis_budget_exhausted mediaId={} reason={}", mediaId, e.getMessage());
             return;
         } catch (Exception e) {
@@ -221,7 +216,6 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> 
                     taskEventService.publishAnalysis(mediaId, msg.getUserGoal(), mode,
                             TaskStatus.of(TaskStatus.State.FAILED, "分析失败，已进入人工处理队列"),
                             TaskStage.DEAD_LETTERED);
-                    segmentIndexService.markIndexFailed(mediaId, "DEAD_LETTERED: " + e.getMessage());
                     log.error("video_analysis_dead_lettered mediaId={} attempts={} permanent={}",
                             mediaId, attempt, permanent, e);
                     return;

@@ -114,6 +114,12 @@ public class AgentCheckpointService {
                 checkpointKey(mediaId), "context", TaskStage.CONTEXT_COMPLETED, reusableContext);
     }
 
+    /** External transcript updates invalidate derived summaries before a new generation is built. */
+    public void replaceContext(Long mediaId, VideoContext context) {
+        checkpointRepository.delete(mediaId, mediaCheckpoint("chunks"), checkpointKey(mediaId));
+        saveContext(mediaId, context);
+    }
+
     public void saveChunks(Long mediaId, List<VideoChunk> chunks) {
         checkpointRepository.write(mediaId, mediaCheckpoint("chunks"), mediaCheckpoint("stage"),
                 checkpointKey(mediaId), "chunks", TaskStage.CHUNKS_COMPLETED, List.copyOf(chunks));

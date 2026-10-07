@@ -23,13 +23,13 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
-public class QdrantVectorStore {
+public class QdrantVectorStore implements KnowledgeVectorIndex {
 
     private static final Logger log = LoggerFactory.getLogger(QdrantVectorStore.class);
     private static final MediaType JSON_MEDIA_TYPE = MediaType.parse("application/json; charset=utf-8");
     private static final Map<String, String> FILTER_INDEXES = Map.of(
             "userId", "integer", "spaceId", "integer", "collectionId", "integer",
-            "sourceId", "integer", "mediaId", "integer");
+            "sourceId", "integer", "mediaId", "integer", "indexVersion", "integer");
 
     private final boolean enabled;
     private final String baseUrl;
@@ -171,6 +171,38 @@ public class QdrantVectorStore {
             JSONObject filter = new JSONObject();
             filter.put("must", must);
 
+            return queryKnowledge(queryEmbedding, filter, limit);
+        } catch (RuntimeException e) {
+            collectionReady.set(false);
+            throw new IllegalStateException("Qdrant 知识检索失败", e);
+        }
+    }
+
+    @Override
+    public List<KnowledgeVectorIndex.Hit> search(List<Double> vector, KnowledgeQueryScope scope, int limit) {
+        if (!enabled || vector.isEmpty() || scope.generations().isEmpty()) return List.of();
+        ensureCollection(vector.size());
+        // Keep each HTTP filter bounded. Global top-K is the top-K union of each partition.
+        var entries = new ArrayList<>(scope.generations().entrySet());
+        List<KnowledgeHit> all = new ArrayList<>();
+        for (int offset = 0; offset < entries.size(); offset += 200) {
+            JSONArray should = new JSONArray();
+            for (var entry : entries.subList(offset, Math.min(entries.size(), offset + 200))) {
+                JSONObject generation = new JSONObject();
+                generation.put("must", List.of(matchCondition("sourceId", entry.getKey()),
+                        matchCondition("indexVersion", entry.getValue().versionNo())));
+                should.add(generation);
+            }
+            JSONObject filter = new JSONObject();
+            filter.put("must", List.of(matchCondition("userId", scope.userId())));
+            filter.put("should", should);
+            all.addAll(queryKnowledge(vector, filter, limit));
+        }
+        return all.stream().sorted(java.util.Comparator.comparingDouble(KnowledgeHit::score).reversed())
+                .limit(limit).map(hit -> new KnowledgeVectorIndex.Hit(hit.segmentId(), hit.sourceId(), hit.score())).toList();
+    }
+
+    private List<KnowledgeHit> queryKnowledge(List<Double> queryEmbedding, JSONObject filter, int limit) {
             JSONObject body = new JSONObject();
             body.put("query", queryEmbedding);
             body.put("filter", filter);
@@ -197,10 +229,6 @@ public class QdrantVectorStore {
                         point.getDoubleValue("score")));
             }
             return hits;
-        } catch (RuntimeException e) {
-            collectionReady.set(false);
-            throw new IllegalStateException("Qdrant 知识检索失败", e);
-        }
     }
 
     /** Removes every vector derived from one source; used before a rebuild to avoid stale recall. */

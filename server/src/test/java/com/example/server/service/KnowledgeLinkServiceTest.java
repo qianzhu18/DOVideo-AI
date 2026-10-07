@@ -38,8 +38,7 @@ class KnowledgeLinkServiceTest {
         KnowledgeSourceMapper sourceMapper = mock(KnowledgeSourceMapper.class);
         KnowledgeSegmentMapper segmentMapper = mock(KnowledgeSegmentMapper.class);
         KnowledgeLinkMapper linkMapper = mock(KnowledgeLinkMapper.class);
-        EmbeddingUtils embeddingUtils = mock(EmbeddingUtils.class);
-        QdrantVectorStore vectorStore = mock(QdrantVectorStore.class);
+        KnowledgeSearchService searchService = mock(KnowledgeSearchService.class);
         KnowledgeAuditService auditService = mock(KnowledgeAuditService.class);
 
         KnowledgeSource script = script(21L, 6L);
@@ -53,17 +52,16 @@ class KnowledgeLinkServiceTest {
         known.setSourceSegmentId("para-1");
         known.setTargetSegmentId("vid-seg-1");
         when(linkMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of(known));
-        when(embeddingUtils.embed(any(String.class))).thenReturn(List.of(0.1));
 
-        QdrantVectorStore.KnowledgeHit self = hit(21L, "self-seg", 0.9);   // 自身来源必须跳过
-        QdrantVectorStore.KnowledgeHit knownPair = hit(9L, "vid-seg-1", 0.8); // 已建议过的配对
-        QdrantVectorStore.KnowledgeHit weak = hit(9L, "vid-seg-2", 0.30);  // 低于阈值
-        QdrantVectorStore.KnowledgeHit good = hit(9L, "vid-seg-3", 0.62);
-        when(vectorStore.searchKnowledge(anyList(), eq(7L), eq(6L), any(), anyInt()))
+        com.example.server.dto.KnowledgeSearchHit self = hit(21L, "self-seg", 0.9);   // 自身来源必须跳过
+        com.example.server.dto.KnowledgeSearchHit knownPair = hit(9L, "vid-seg-1", 0.8); // 已建议过的配对
+        com.example.server.dto.KnowledgeSearchHit weak = hit(9L, "vid-seg-2", 0.30);  // 低于阈值
+        com.example.server.dto.KnowledgeSearchHit good = hit(9L, "vid-seg-3", 0.62);
+        when(searchService.search(eq(7L), any()))
                 .thenReturn(List.of(self, knownPair, weak, good));
 
         KnowledgeLinkService service = new KnowledgeLinkService(sourceService, sourceMapper,
-                segmentMapper, linkMapper, embeddingUtils, vectorStore, auditService, 0.50);
+                segmentMapper, linkMapper, searchService, auditService, 0.50);
         int created = service.suggest(7L, 21L);
 
         assertEquals(1, created);
@@ -89,7 +87,7 @@ class KnowledgeLinkServiceTest {
 
         KnowledgeLinkService service = new KnowledgeLinkService(sourceService,
                 mock(KnowledgeSourceMapper.class), mock(KnowledgeSegmentMapper.class),
-                linkMapper, mock(EmbeddingUtils.class), mock(QdrantVectorStore.class),
+                linkMapper, mock(KnowledgeSearchService.class),
                 mock(KnowledgeAuditService.class), 0.50);
 
         assertThrows(SecurityException.class, () -> service.confirm(99L, 5L));
@@ -111,8 +109,7 @@ class KnowledgeLinkServiceTest {
 
         KnowledgeLinkService service = new KnowledgeLinkService(sourceService,
                 mock(KnowledgeSourceMapper.class), mock(KnowledgeSegmentMapper.class),
-                mock(KnowledgeLinkMapper.class), mock(EmbeddingUtils.class),
-                mock(QdrantVectorStore.class), mock(KnowledgeAuditService.class), 0.50);
+                mock(KnowledgeLinkMapper.class), mock(KnowledgeSearchService.class), mock(KnowledgeAuditService.class), 0.50);
 
         assertThrows(BusinessException.class, () -> service.suggest(7L, 9L));
     }
@@ -127,7 +124,7 @@ class KnowledgeLinkServiceTest {
         return source;
     }
 
-    private static QdrantVectorStore.KnowledgeHit hit(Long sourceId, String segmentId, double score) {
-        return new QdrantVectorStore.KnowledgeHit(segmentId, sourceId, null, 0, 60000, score);
+    private static com.example.server.dto.KnowledgeSearchHit hit(Long sourceId, String segmentId, double score) {
+        return new com.example.server.dto.KnowledgeSearchHit(segmentId, sourceId, "VIDEO", 5L, "title", 0, 60000, score, "text", "", "", "vector");
     }
 }

@@ -54,10 +54,10 @@ class McpDispatcherTest {
     }
 
     @Test
-    void toolsListExposesExactlyTheFourReadOnlyTools() throws Exception {
+    void toolsListExposesReadOnlyToolsAndCatalog() throws Exception {
         JsonNode tools = call("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}")
                 .path("result").path("tools");
-        assertEquals(4, tools.size());
+        assertEquals(5, tools.size());
         assertEquals("list_knowledge_spaces", tools.get(0).path("name").asText());
         assertEquals("search_video_knowledge", tools.get(1).path("name").asText());
         assertTrue(tools.get(1).path("inputSchema").path("required").toString().contains("query"));
@@ -69,7 +69,7 @@ class McpDispatcherTest {
 
     @Test
     void toolCallReturnsBackendTextAsContent() throws Exception {
-        when(backend.searchKnowledge(eq("浏阳河"), isNull(), isNull(), isNull()))
+        when(backend.searchKnowledge(eq("浏阳河"), isNull(), isNull(), isNull(), isNull()))
                 .thenReturn("[{\"title\":\"洋来作品.mp4\"}]");
         JsonNode result = call("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\","
                         + "\"params\":{\"name\":\"search_video_knowledge\","
@@ -148,6 +148,22 @@ class McpDispatcherTest {
                         + "\"params\":{\"name\":\"search_video_knowledge\","
                         + "\"arguments\":{\"query\":\"x\",\"topK\":99}}}")
                 .path("error").path("code").asInt());
+    }
+
+    @Test
+    void catalogDiscoveryCallsAuthorizedBackend() throws Exception {
+        when(backend.knowledgeCatalog(7L)).thenReturn("{\"collections\":[],\"placements\":[],\"ingestJobs\":[]}");
+        JsonNode response = call("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+                + "\"params\":{\"name\":\"get_knowledge_catalog\",\"arguments\":{\"spaceId\":7}}}");
+        assertFalse(response.path("result").path("isError").asBoolean());
+        assertTrue(response.path("result").path("content").get(0).path("text").asText().contains("placements"));
+    }
+
+    @Test
+    void catalogWithoutSpaceIsAProtocolError() throws Exception {
+        JsonNode response = call("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+                + "\"params\":{\"name\":\"get_knowledge_catalog\",\"arguments\":{}}}");
+        assertEquals(-32602, response.path("error").path("code").asInt());
     }
 
     private JsonNode call(String body) throws Exception {

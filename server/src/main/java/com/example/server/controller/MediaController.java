@@ -1,10 +1,8 @@
 package com.example.server.controller;
 
 import com.example.server.common.Result;
-import com.example.server.dto.AnalysisMode;
 import com.example.server.dto.MediaSummary;
 import com.example.server.entity.MediaFile;
-import com.example.server.service.AnalysisDispatchService;
 import com.example.server.service.AuthService;
 import com.example.server.service.ChunkUploadService;
 import com.example.server.service.MediaIngestService;
@@ -25,24 +23,17 @@ import java.util.Set;
 @RequestMapping("/media")
 public class MediaController {
 
-    /** Uploads enter the analysis pipeline automatically: the user's job ends at the
-     *  upload gesture — transcription, indexing and knowledge-base readiness follow
-     *  without any further click. Failures degrade to the manual Video Agent path. */
-    static final String DEFAULT_ANALYSIS_GOAL = "理解视频核心内容并生成结构化分析报告";
-
+    // Source creation and the independent knowledge job commit with the uploaded media.
     private final ChunkUploadService chunkUploadService;
     private final MediaIngestService mediaIngestService;
     private final MediaService mediaService;
-    private final AnalysisDispatchService dispatchService;
 
     public MediaController(ChunkUploadService chunkUploadService,
                            MediaIngestService mediaIngestService,
-                           MediaService mediaService,
-                           AnalysisDispatchService dispatchService) {
+                           MediaService mediaService) {
         this.chunkUploadService = chunkUploadService;
         this.mediaIngestService = mediaIngestService;
         this.mediaService = mediaService;
-        this.dispatchService = dispatchService;
     }
 
     // 说明：下列方法上的 throws 源于 service 层声明了受检异常（throws Exception/IOException）。
@@ -93,7 +84,6 @@ public class MediaController {
             @RequestParam String uploadId,
             @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId) throws Exception {
         MediaSummary media = MediaSummary.from(chunkUploadService.complete(uploadId, userId));
-        dispatchDefaultAnalysis(media.id(), userId);
         return Result.ok(media);
     }
 
@@ -101,7 +91,6 @@ public class MediaController {
     public Result<MediaSummary> upload(@RequestParam("file") MultipartFile file,
                                        @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId) throws Exception {
         MediaSummary media = MediaSummary.from(mediaIngestService.ingestFile(file, userId));
-        dispatchDefaultAnalysis(media.id(), userId);
         return Result.ok(media);
     }
 
@@ -109,20 +98,7 @@ public class MediaController {
     public Result<MediaSummary> uploadUrl(@RequestParam("url") String url,
                                           @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId) throws Exception {
         MediaSummary media = MediaSummary.from(mediaIngestService.ingestUrl(url, userId));
-        dispatchDefaultAnalysis(media.id(), userId);
         return Result.ok(media);
-    }
-
-    /** Best-effort: a dispatch failure must not fail the upload response — the media
-     *  exists and the card's Video Agent remains the manual start path. */
-    private void dispatchDefaultAnalysis(Long mediaId, Long userId) {
-        try {
-            MediaFile mediaFile = mediaService.requireOwnedMedia(mediaId, userId);
-            dispatchService.submitBulk(mediaFile, DEFAULT_ANALYSIS_GOAL, AnalysisMode.GENERAL);
-        } catch (RuntimeException e) {
-            // Dedup replays, rate limits and quota exhaustion all land here; the upload
-            // itself is already durable and the user can start analysis from the card.
-        }
     }
 
     @GetMapping("/list")

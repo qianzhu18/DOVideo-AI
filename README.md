@@ -1,74 +1,65 @@
 # VideoKB
 
-**把一批视频变成一个可以提问、可以溯源、可以持续更新的知识库。**
+**把课程视频、社区分享和学习笔记整理成可检索、可提问、可回看原片的知识库。**
 
-上传视频（或粘贴脚本/笔记）→ 自动解析为带时间戳的多模态证据 → 跨视频检索 → 生成自然语言回答，回答必须绑定可回跳原始视频的证据引用，证据不足时明确拒答。
+Java 21 / Spring Boot 后端 + Vue 工作台。当前支持跨视频检索与单轮引用问答，并已在工作区完成独立入库、多目录引用和安全索引重建；完整多轮会话与社区成员共享仍待建设。
 
-## 它解决什么问题
+## 先读什么
 
-视频看完就忘、笔记散落各处、想引用某个片段要来回拖进度条。VideoKB 把「一批视频 + 你的脚本笔记」统一成一个知识资产：**所有内容切分为证据片段、建立向量与关键词双路索引，你像使用 Dify/Coze 知识库一样提问，它跨视频给出有据可查的回答**。时间戳不是卖点，是回答的护栏——每条结论都能定位到原始视频的某一秒。
+- [文档入口](docs/README.md)：全部活动文档、历史材料与职责。
+- [agent.md](agent.md)：业务场景、BR-01 至 BR-08 和验收契约。
+- [当前交付状态](docs/CURRENT.md)：代码、测试、真实/合成验收及遗留。
+- [当前后端架构](docs/CURRENT_ARCHITECTURE_ASSESSMENT.md)：上传、向量化、更新、目录和 MCP 的实际流程。
+- [活跃队列](docs/MASTER_TODO.md)：剩余工作与关闭条件。
 
-## 核心能力
+## 当前怎样工作
 
-### 📚 跨视频知识库（产品核心）
+视频上传 → 持久知识入库任务 → RocketMQ 独立消费者 → 共享 ASR/OCR 与 Checkpoint → 分段和 embedding → Qdrant 写入 → 发布 READY 版本。
 
-- **知识空间 / 目录 / 标签 / 审计** — 多租户隔离，一切变更落 `knowledge_audit_logs`，证据行以 MySQL `knowledge_segments` 为权威真源（INDEXING → READY/FAILED 状态机）。
-- **三策略召回 + RRF 融合** — vector / keyword / hybrid 三路检索，30 条 golden 集实测 hybrid Recall@5 **0.833**、MRR **0.75**，全面优于单通道。
-- **证据约束回答** — 相关性低于阈值（0.45）时诚实拒答；回答中的引用必须能对齐到真实证据片段。
-- **本地目录增量同步** — contentHash 差分（CREATED/CHANGED/MOVED/DELETED/UNCHANGED），只重建受影响来源，不重复烧 ASR/OCR。
-- **Muku 批量导入** — 每行一条 B 站、YouTube 等视频链接，选择目标知识空间、下载并发和自定义解析目标；Muku 只负责获取视频，Java 服务继续完成转写、画面识别、RocketMQ 分析任务与 Qdrant 知识索引。批次状态和 Muku checkpoint 保存在 `MUKU_WORK_DIR`，可用原批次 ID 续跑。
-- **视频 ↔ 脚本关联** — 脚本按段落切分入同一检索空间，语义配对建议经人工确认后成事实。
+同一视频可同时归入“前端学习”和“后端学习”，共享内容与索引。目录操作修改引用；重建构造新版本，失败保留旧的已发布知识。Agent 报告由用户按需启动，不决定知识是否就绪。
 
-### 🎬 可靠的视频任务链路
+检索使用 **Qdrant dense + MySQL LIKE + RRF**，按当前用户、目录归属和已发布版本过滤。BM25、reranker 和 Milvus 迁移尚未实现。固定时间窗与摘要聚合不能称为已完成的语义分块；逐字引用检查也不能证明每条结论正确。
 
-- **分片上传 + 断点续传** — 前端 5 MB 分片，Redis 记录进度，MinIO 存储合并视频。
-- **异步削峰** — RocketMQ 承载解析任务，提交即返回任务 ID；Redisson 按「内容指纹 + 分析目标」加锁，幂等防重。
-- **成本护栏** — 用户级与全局令牌桶限流；模型调用指数退避重试；分析任务带轮次与预算上限。
-- **失败可观测** — 失败任务入死信表，管理接口一键重放（从 checkpoint 续跑，实测重放 60s vs 首跑 8 分钟）。
-
-### 🧩 时序多模态 VideoContext
-
-- ASR 与关键帧 OCR 双分支并行，感知哈希去重，单路失败容忍；统一为带时间戳的 `VideoSegment`。
-- 5 分钟语义分块（摘要 + 关键词 + bge-m3 1024 维向量），Qdrant 不可用时降级本地关键词与向量排序。
-
-### 🔁 受证据约束的 AgentLoop
-
-- Planner → Executor → Critic 闭环：结论必须绑定时间戳证据，Critic 不通过时定向补检索，最多两轮。
-- 四种分析模式（通用/学习/审查/创作）自动路由；Qdrant/Embedding 故障全链路降级不阻断。
-
-### 🔌 MCP 出口
-
-独立 `mcp-server` 模块（Streamable HTTP :9091），三个只读工具 `list_knowledge_spaces` / `search_video_knowledge` / `get_video_evidence`，双令牌信任边界 + 调用审计——Claude Code、Cursor 等外部 Agent 可直接检索并引用带时间戳的视频证据。
+MCP 提供五个只读工具：`list_knowledge_spaces`、`get_knowledge_catalog`、`search_video_knowledge`、`ask_video_knowledge`、`get_video_evidence`。客户端共用配置的上游账号，当前是个人/服务账号适配器；多人社区开放需要补主体绑定与空间授权。
 
 ## 技术栈
 
-| 层次 | 技术 |
-| :--- | :--- |
-| 前端 | Vue 3 + Vite + SSE + Marked |
-| 后端 | Java 21、Spring Boot 3.5.9、MyBatis-Plus、LangChain4j |
-| 异步与缓存 | RocketMQ 5.3、Redis 7 + Redisson（分布式锁 / 限流 / 幂等） |
-| 数据与存储 | MySQL 8、MinIO、Qdrant |
-| 视频与 AI | FFmpeg、Tesseract、DeepSeek、TeleSpeechASR、BGE-M3 |
+| 层次 | 现行实现 |
+| --- | --- |
+| 前端 | Vue 3、Vite、SSE、Marked |
+| 后端 | Java 21、Spring Boot、MyBatis-Plus、LangChain4j |
+| 任务与缓存 | RocketMQ、Redis、Redisson |
+| 数据与媒体 | MySQL、MinIO |
+| 检索 | Qdrant、dense embedding、MySQL LIKE、RRF |
+| 视频提取 | FFmpeg、Tesseract、本项目配置的 ASR/文本/embedding provider |
+| 监测 | Actuator、Micrometer、Prometheus；指标显式开启并要求管理员身份 |
+
+模型与服务参数以 `.env.example` 及服务配置为准。Python 仅保留评测、验收和数据脚本，产品服务使用 Java。
 
 ## 快速开始
 
+准备 JDK 21、Node、Docker Compose、FFmpeg 和 Tesseract，按 `.env.example` 配置环境后执行：
+
 ```bash
-./scripts/dev-up.sh   # 一键启动：MySQL + Redis + MinIO + Qdrant + RocketMQ + 后端 9090 + 前端 5173 + MCP 9091
+./scripts/dev-up.sh
 ```
 
-1. 打开 http://127.0.0.1:5173 注册账号，上传视频，等待解析完成（状态 READY）；
-2. 知识库 → 侧栏「脚本 / 笔记」粘贴口播稿，立即入库可检索；
-3. 顶部跨视频提问（例如视频里讲过的概念），观察**视频与脚本双源证据**与毫秒时间戳；
-4. （可选）给 AI 助手配置 MCP：`http://127.0.0.1:9091/mcp` + Bearer 令牌。
+默认访问前端 `http://localhost:5173`，后端 `9090`，MCP `9091`；以实际启动输出为准。没有配置 `MCP_CLIENT_TOKENS` 时启动脚本跳过 MCP。
 
-环境要求：JDK 21、Node 22、Docker Compose、FFmpeg、Tesseract（chi_sim + eng）。配置见 `.env.example`。
+1. 注册登录并上传视频，在知识库观察独立入库状态，等待 READY。
+2. 使用“同时归入”整理多个主题；“移除此处引用”只解除当前归属。
+3. “仅搜证据”查看命中片段；“提问”查看回答与引用，点击时间戳回看原片。
+4. 需要单视频报告时，在视频工作台主动启动 Video Agent。
+5. 接入外部助手时按 [MCP SOP](docs/MCP_SOP.md) 配置客户端令牌。
 
-批量链接导入还要求在运行 Java 服务的同一环境中安装 Muku CLI，并在 `.env` 中设置 `MUKU_PATH`；`MUKU_WORK_DIR` 应指向持久化目录，以保留批次状态和下载断点。
+本地目录扫描、脚本/转写导入、Muku 批量链接接入仍使用已有入口。Muku CLI 需在 Java 运行环境可用，并配置 `MUKU_PATH/MUKU_WORK_DIR`。本地 CHANGED 文件尚未完成保留旧资产的安全替换，详见 [兼容说明](docs/BREAKING-CHANGES.md)。
 
-## 验收与路线
+## 验收与发布范围
 
-业务需求与验收标准见 [agent.md](./agent.md)（单一事实源）。评测数据集与 runner 在 `eval/`，报告随验收轮次更新。
+本次架构检查使用真实基础设施与可控 AI 替身，报告、测试数量及历史真实语料结果统一见 [CURRENT](docs/CURRENT.md)。不把合成延迟当生产性能，不把来源命中当完整问答正确率。
+
+当前生命周期改造仍在工作区，尚未生产部署。发布前必须按 [兼容与发布说明](docs/BREAKING-CHANGES.md) 验证迁移、真实问答/播放与回退边界。完整体验路径见 [体验 SOP](docs/EXPERIENCE_SOP.md)。
 
 ## License
 
-[MIT](./LICENSE)
+[MIT](LICENSE)

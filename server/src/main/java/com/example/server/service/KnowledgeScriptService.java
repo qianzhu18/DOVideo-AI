@@ -48,6 +48,7 @@ public class KnowledgeScriptService {
     private final QdrantVectorStore vectorStore;
     private final KnowledgeAuditService auditService;
     private final String embeddingModel;
+    private final KnowledgePlacementService placements;
 
     public KnowledgeScriptService(KnowledgeSourceService sourceService,
                                   KnowledgeSpaceService spaceService,
@@ -59,7 +60,8 @@ public class KnowledgeScriptService {
                                   EmbeddingUtils embeddingUtils,
                                   QdrantVectorStore vectorStore,
                                   KnowledgeAuditService auditService,
-                                  @Value("${ai.embedding.model:BAAI/bge-m3}") String embeddingModel) {
+                                  @Value("${ai.embedding.model:BAAI/bge-m3}") String embeddingModel,
+                                  KnowledgePlacementService placements) {
         this.sourceService = sourceService;
         this.spaceService = spaceService;
         this.collectionService = collectionService;
@@ -71,6 +73,7 @@ public class KnowledgeScriptService {
         this.vectorStore = vectorStore;
         this.auditService = auditService;
         this.embeddingModel = embeddingModel;
+        this.placements = placements;
     }
 
     public KnowledgeSourceView createScript(Long userId, ScriptSourceRequest request) {
@@ -114,6 +117,7 @@ public class KnowledgeScriptService {
         source.setCurrentVersion(1);
         source.setStatus(KnowledgeSourceService.STATUS_PENDING);
         sourceMapper.insert(source);
+        placements.ensurePrimary(source);
         return source;
     }
 

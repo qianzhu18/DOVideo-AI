@@ -48,7 +48,7 @@ public class KnowledgeSeedService {
             throw new BusinessException(ErrorCode.INVALID_ARGUMENT,
                     "转写分段内容为空：每段都缺少文本与 OCR");
         }
-        checkpointService.saveContext(source.getMediaId(), new VideoContext(
+        checkpointService.replaceContext(source.getMediaId(), new VideoContext(
                 IMPORT_SOURCE,
                 request.goal() == null ? "" : request.goal().trim(),
                 videoSegments));

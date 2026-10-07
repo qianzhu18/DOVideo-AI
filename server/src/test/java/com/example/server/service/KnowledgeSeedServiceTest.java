@@ -60,7 +60,7 @@ class KnowledgeSeedServiceTest {
         assertEquals(3, result.importedSegments());
 
         ArgumentCaptor<VideoContext> captor = ArgumentCaptor.forClass(VideoContext.class);
-        verify(checkpointService).saveContext(eq(21L), captor.capture());
+        verify(checkpointService).replaceContext(eq(21L), captor.capture());
         VideoContext context = captor.getValue();
         assertEquals(KnowledgeSeedService.IMPORT_SOURCE, context.source());
         assertEquals("migration goal", context.userGoal());
@@ -80,7 +80,7 @@ class KnowledgeSeedServiceTest {
         when(sourceService.requireSourceByMediaId(21L)).thenReturn(source);
 
         assertThrows(SecurityException.class, () -> service.importTranscript(7L, request(21L)));
-        verify(checkpointService, never()).saveContext(anyLong(), any());
+        verify(checkpointService, never()).replaceContext(anyLong(), any());
         verify(indexService, never()).indexMedia(anyLong());
     }
 
@@ -96,7 +96,7 @@ class KnowledgeSeedServiceTest {
         BusinessException error = assertThrows(BusinessException.class,
                 () -> service.importTranscript(7L, blank));
         assertTrue(error.getMessage().contains("转写分段内容为空"));
-        verify(checkpointService, never()).saveContext(anyLong(), any());
+        verify(checkpointService, never()).replaceContext(anyLong(), any());
     }
 
     private static TranscriptImportRequest request(Long mediaId) {

@@ -81,7 +81,7 @@ class VideoAnalysisConsumerTest {
         when(valueOps.get(anyString())).thenReturn(null);
         consumer = new VideoAnalysisConsumer(aiService, redissonClient, redisTemplate,
                 checkpointService, rocketMQTemplate, failedTaskService, mediaService,
-                taskEventService, taskLedger, segmentIndexService, DEAD_TOPIC);
+                taskEventService, taskLedger, DEAD_TOPIC);
     }
 
     private AnalysisTaskMsg msg() {

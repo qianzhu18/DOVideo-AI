@@ -37,6 +37,9 @@ class KnowledgeSegmentIndexServiceTest {
         EmbeddingUtils embeddingUtils = mock(EmbeddingUtils.class);
         when(sourceService.requireSourceByMediaId(5L)).thenReturn(source(9L, 5L));
         when(versionMapper.selectOne(any())).thenReturn(version(11L, 1));
+        when(versionMapper.insert(any(KnowledgeSourceVersion.class))).thenAnswer(call -> {
+            ((KnowledgeSourceVersion) call.getArgument(0)).setId(12L); return 1;
+        });
         when(checkpointService.loadChunks(5L)).thenReturn(List.of(chunk(0, 60_000, "0.1", "0.2")));
         when(embeddingUtils.embedBatch(any())).thenAnswer(invocation -> {
             List<String> texts = invocation.getArgument(0);
@@ -45,25 +48,20 @@ class KnowledgeSegmentIndexServiceTest {
 
         KnowledgeSegmentIndexService service = new KnowledgeSegmentIndexService(
                 sourceService, versionMapper, segmentMapper, vectorStore, checkpointService,
-                chunkingService, embeddingUtils, mock(KnowledgeAuditService.class), "BAAI/bge-m3");
+                chunkingService, embeddingUtils, mock(KnowledgeAuditService.class), "BAAI/bge-m3", mock(KnowledgeIndexPublisher.class), locks(), new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
         List<KnowledgeSegment> segments = service.indexMedia(5L);
 
         assertEquals(2, segments.size());
-        verify(segmentMapper).delete(any());
+        verify(segmentMapper, never()).delete(any());
         verify(segmentMapper, times(2)).insert(any(KnowledgeSegment.class));
         ArgumentCaptor<List<QdrantVectorStore.KnowledgePoint>> points = ArgumentCaptor.forClass(List.class);
-        verify(vectorStore).deleteSource(9L);
+        verify(vectorStore, never()).deleteSource(9L);
         verify(vectorStore).upsertKnowledge(points.capture());
         assertEquals(2, points.getValue().size());
         assertEquals("9", points.getValue().get(0).payload().getString("sourceId"));
         assertEquals("3", points.getValue().get(0).payload().getString("spaceId"));
-        ArgumentCaptor<KnowledgeSourceVersion> updates = ArgumentCaptor.forClass(KnowledgeSourceVersion.class);
-        verify(versionMapper, times(2)).updateById(updates.capture());
-        assertEquals(KnowledgeSegmentIndexService.STATUS_READY, updates.getAllValues().get(1).getStatus());
-        // The source row must leave PENDING once vectors are queryable, or list views
-        // keep showing a readiness badge that never clears.
-        verify(sourceService).updateIndexStatus(any(KnowledgeSource.class),
-                eq(KnowledgeSourceService.STATUS_READY));
+        verify(versionMapper).insert(any(KnowledgeSourceVersion.class));
+        verify(sourceService, never()).updateIndexStatus(any(), any());
     }
 
     @Test
@@ -78,6 +76,9 @@ class KnowledgeSegmentIndexServiceTest {
         KnowledgeSource source = source(9L, 5L);
         when(sourceService.requireSourceByMediaId(5L)).thenReturn(source);
         when(versionMapper.selectOne(any())).thenReturn(version(11L, 1));
+        when(versionMapper.insert(any(KnowledgeSourceVersion.class))).thenAnswer(call -> {
+            ((KnowledgeSourceVersion) call.getArgument(0)).setId(12L); return 1;
+        });
         when(checkpointService.loadChunks(5L)).thenReturn(List.of());
         when(checkpointService.loadContext(5L)).thenReturn(
                 new VideoContext("minio://video", "goal", List.of()));
@@ -85,16 +86,11 @@ class KnowledgeSegmentIndexServiceTest {
 
         KnowledgeSegmentIndexService service = new KnowledgeSegmentIndexService(
                 sourceService, versionMapper, segmentMapper, vectorStore, checkpointService,
-                chunkingService, embeddingUtils, mock(KnowledgeAuditService.class), "BAAI/bge-m3");
+                chunkingService, embeddingUtils, mock(KnowledgeAuditService.class), "BAAI/bge-m3", mock(KnowledgeIndexPublisher.class), locks(), new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
         assertThrows(IllegalStateException.class, () -> service.indexMedia(5L));
 
-        ArgumentCaptor<KnowledgeSourceVersion> recorded = ArgumentCaptor.forClass(KnowledgeSourceVersion.class);
-        verify(versionMapper, times(2)).updateById(recorded.capture());
-        KnowledgeSourceVersion last = recorded.getValue();
-        assertEquals(KnowledgeSegmentIndexService.STATUS_FAILED, last.getStatus());
-        assertTrue(last.getFailureReason() != null && !last.getFailureReason().isBlank());
-        verify(sourceService).updateIndexStatus(any(KnowledgeSource.class),
-                eq(KnowledgeSourceService.STATUS_FAILED));
+        verify(versionMapper).insert(any(KnowledgeSourceVersion.class));
+        verify(sourceService, never()).updateIndexStatus(any(), any());
         verify(vectorStore, never()).upsertKnowledge(any());
     }
 
@@ -109,6 +105,9 @@ class KnowledgeSegmentIndexServiceTest {
         EmbeddingUtils embeddingUtils = mock(EmbeddingUtils.class);
         when(sourceService.requireSourceByMediaId(5L)).thenReturn(source(9L, 5L));
         when(versionMapper.selectOne(any())).thenReturn(version(11L, 1));
+        when(versionMapper.insert(any(KnowledgeSourceVersion.class))).thenAnswer(call -> {
+            ((KnowledgeSourceVersion) call.getArgument(0)).setId(12L); return 1;
+        });
         when(checkpointService.loadChunks(5L)).thenReturn(List.of(chunk(0, 60_000, "0.1", "0.2")));
         when(embeddingUtils.embedBatch(any())).thenAnswer(invocation -> {
             List<String> texts = invocation.getArgument(0);
@@ -117,7 +116,7 @@ class KnowledgeSegmentIndexServiceTest {
 
         KnowledgeSegmentIndexService service = new KnowledgeSegmentIndexService(
                 sourceService, versionMapper, segmentMapper, vectorStore, checkpointService,
-                chunkingService, embeddingUtils, mock(KnowledgeAuditService.class), "BAAI/bge-m3");
+                chunkingService, embeddingUtils, mock(KnowledgeAuditService.class), "BAAI/bge-m3", mock(KnowledgeIndexPublisher.class), locks(), new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
         service.indexMedia(5L);
 
         // Evidence granularity is the segment, so every segment gets its own vector even
@@ -136,8 +135,10 @@ class KnowledgeSegmentIndexServiceTest {
         AgentCheckpointService checkpointService = mock(AgentCheckpointService.class);
         VideoChunkingService chunkingService = mock(VideoChunkingService.class);
         EmbeddingUtils embeddingUtils = mock(EmbeddingUtils.class);
-        // source(9L, 5L) 的属主是 userId=7
-        when(sourceService.requireSourceByMediaId(5L)).thenReturn(source(9L, 5L));
+        // source belongs to user 7 and only the published version is visible.
+        var ready = source(9L, 5L); ready.setStatus("READY");
+        when(sourceService.requireSourceByMediaId(5L)).thenReturn(ready);
+        when(versionMapper.selectOne(any())).thenReturn(version(11L, 1));
         KnowledgeSegment row = new KnowledgeSegment();
         row.setId("seg-1");
         row.setMediaId(5L);
@@ -145,10 +146,20 @@ class KnowledgeSegmentIndexServiceTest {
 
         KnowledgeSegmentIndexService service = new KnowledgeSegmentIndexService(
                 sourceService, versionMapper, segmentMapper, vectorStore, checkpointService,
-                chunkingService, embeddingUtils, mock(KnowledgeAuditService.class), "BAAI/bge-m3");
+                chunkingService, embeddingUtils, mock(KnowledgeAuditService.class), "BAAI/bge-m3", mock(KnowledgeIndexPublisher.class), locks(), new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
 
         assertThrows(SecurityException.class, () -> service.listSegments(99L, 5L));
         assertEquals(List.of(row), service.listSegments(7L, 5L));
+    }
+
+    private static org.redisson.api.RedissonClient locks() {
+        var client = mock(org.redisson.api.RedissonClient.class);
+        var lock = mock(org.redisson.api.RLock.class);
+        when(client.getLock(org.mockito.ArgumentMatchers.anyString())).thenReturn(lock);
+        try { when(lock.tryLock(org.mockito.ArgumentMatchers.anyLong(), any())).thenReturn(true); }
+        catch (InterruptedException e) { throw new AssertionError(e); }
+        when(lock.isHeldByCurrentThread()).thenReturn(true);
+        return client;
     }
 
     private static KnowledgeSource source(Long id, Long mediaId) {

@@ -10,7 +10,6 @@ import com.example.server.exception.BusinessException;
 import com.example.server.mapper.KnowledgeLinkMapper;
 import com.example.server.mapper.KnowledgeSegmentMapper;
 import com.example.server.mapper.KnowledgeSourceMapper;
-import com.example.server.utils.EmbeddingUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -45,8 +44,7 @@ public class KnowledgeLinkService {
     private final KnowledgeSourceMapper sourceMapper;
     private final KnowledgeSegmentMapper segmentMapper;
     private final KnowledgeLinkMapper linkMapper;
-    private final EmbeddingUtils embeddingUtils;
-    private final QdrantVectorStore vectorStore;
+    private final KnowledgeSearchService searchService;
     private final KnowledgeAuditService auditService;
     private final double minSuggestScore;
 
@@ -54,16 +52,14 @@ public class KnowledgeLinkService {
                                 KnowledgeSourceMapper sourceMapper,
                                 KnowledgeSegmentMapper segmentMapper,
                                 KnowledgeLinkMapper linkMapper,
-                                EmbeddingUtils embeddingUtils,
-                                QdrantVectorStore vectorStore,
+                                KnowledgeSearchService searchService,
                                 KnowledgeAuditService auditService,
                                 @Value("${knowledge.link.suggest-min-score:0.50}") double minSuggestScore) {
         this.sourceService = sourceService;
         this.sourceMapper = sourceMapper;
         this.segmentMapper = segmentMapper;
         this.linkMapper = linkMapper;
-        this.embeddingUtils = embeddingUtils;
-        this.vectorStore = vectorStore;
+        this.searchService = searchService;
         this.auditService = auditService;
         this.minSuggestScore = minSuggestScore;
     }
@@ -85,14 +81,12 @@ public class KnowledgeLinkService {
         int scanned = 0;
         for (KnowledgeSegment paragraph : paragraphs) {
             if (scanned++ >= MAX_PARAGRAPHS_PER_RUN) break;
-            List<Double> vector = embeddingUtils.embed(paragraph.getTranscript());
-            if (vector.isEmpty()) continue;
-            List<QdrantVectorStore.KnowledgeHit> hits = vectorStore
-                    .searchKnowledge(vector, userId, script.getSpaceId(), null, MATCHES_PER_PARAGRAPH * 3);
+            var hits = searchService.search(userId, new com.example.server.dto.KnowledgeSearchRequest(
+                    script.getSpaceId(), null, paragraph.getTranscript(), MATCHES_PER_PARAGRAPH * 3, "vector"));
             int kept = 0;
-            for (QdrantVectorStore.KnowledgeHit hit : hits) {
+            for (com.example.server.dto.KnowledgeSearchHit hit : hits) {
                 if (kept >= MATCHES_PER_PARAGRAPH) break;
-                if (hit.sourceId().equals(scriptSourceId) || hit.score() < minSuggestScore) continue;
+                if (!"VIDEO".equals(hit.sourceType()) || hit.sourceId().equals(scriptSourceId) || hit.score() < minSuggestScore) continue;
                 if (!knownPairs.add(pairKey(paragraph.getId(), hit.segmentId()))) continue;
                 created.add(link(script, paragraph, hit));
                 kept++;
@@ -133,7 +127,8 @@ public class KnowledgeLinkService {
             KnowledgeSegment from = segments.get(link.getSourceSegmentId());
             KnowledgeSegment to = segments.get(link.getTargetSegmentId());
             KnowledgeSource target = sources.get(link.getTargetSourceId());
-            if (from == null || to == null || target == null) continue; // stale half-deleted pair
+            if (from == null || to == null || target == null || !userId.equals(target.getOwnerUserId())
+                    || !"READY".equals(target.getStatus())) continue; // stale half-deleted pair
             views.add(KnowledgeLinkView.from(link, from, to, target));
         }
         return views;
@@ -175,7 +170,7 @@ public class KnowledgeLinkService {
     }
 
     private KnowledgeLink link(KnowledgeSource script, KnowledgeSegment paragraph,
-                               QdrantVectorStore.KnowledgeHit hit) {
+                               com.example.server.dto.KnowledgeSearchHit hit) {
         KnowledgeLink link = new KnowledgeLink();
         link.setSourceId(script.getId());
         link.setTargetSourceId(hit.sourceId());

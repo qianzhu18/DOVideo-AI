@@ -24,17 +24,20 @@ public class KnowledgeCollectionService {
 
     private final KnowledgeCollectionMapper collectionMapper;
     private final KnowledgeSourceMapper sourceMapper;
+    private final com.example.server.mapper.KnowledgePlacementMapper placementMapper;
     private final KnowledgeSpaceService spaceService;
     private final KnowledgeAuditService auditService;
 
     public KnowledgeCollectionService(KnowledgeCollectionMapper collectionMapper,
                                       KnowledgeSourceMapper sourceMapper,
                                       KnowledgeSpaceService spaceService,
-                                      KnowledgeAuditService auditService) {
+                                      KnowledgeAuditService auditService,
+                                      com.example.server.mapper.KnowledgePlacementMapper placementMapper) {
         this.collectionMapper = collectionMapper;
         this.sourceMapper = sourceMapper;
         this.spaceService = spaceService;
         this.auditService = auditService;
+        this.placementMapper = placementMapper;
     }
 
     public List<KnowledgeCollectionView> list(Long userId, Long spaceId) {
@@ -125,6 +128,9 @@ public class KnowledgeCollectionService {
                 .eq("collection_id", collectionId)
                 .ne("status", "DELETED"));
         if (sourceCount > 0) throw new BusinessException(ErrorCode.CONFLICT, "请先移动目录中的内容源");
+        long referenceCount = placementMapper.selectCount(
+                new QueryWrapper<com.example.server.entity.KnowledgePlacement>().eq("collection_id", collectionId));
+        if (referenceCount > 0) throw new BusinessException(ErrorCode.CONFLICT, "请先移除或移动目录中的引用");
         collectionMapper.deleteById(collection.getId());
         auditService.record(userId, "COLLECTION_DELETED", "COLLECTION", collection.getId(), collection.getSpaceId(),
                 collection.getId(), "path=" + collection.getPath());
@@ -142,6 +148,13 @@ public class KnowledgeCollectionService {
             throw new BusinessException(ErrorCode.INVALID_ARGUMENT, "目录不属于指定知识空间");
         }
         return collection;
+    }
+
+    public List<Long> subtreeIds(Long spaceId, Long collectionId) {
+        KnowledgeCollection root = requireCollectionInSpace(collectionId, spaceId);
+        return collectionMapper.selectList(new QueryWrapper<KnowledgeCollection>().eq("space_id", spaceId))
+                .stream().filter(c -> isSameOrDescendant(c.getPath(), root.getPath()))
+                .map(KnowledgeCollection::getId).toList();
     }
 
     private KnowledgeCollection requireParentInSpace(Long parentId, Long spaceId) {

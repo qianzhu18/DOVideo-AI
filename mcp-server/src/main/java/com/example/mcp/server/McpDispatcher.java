@@ -150,7 +150,9 @@ public class McpDispatcher {
         searchProps.putObject("query").put("type", "string")
                 .put("description", "Natural-language question or keywords");
         searchProps.putObject("spaceId").put("type", "integer")
-                .put("description", "Space to search; omit to search all spaces");
+                .put("description", "Space to search; omit to search up to 10 owned spaces");
+        searchProps.putObject("collectionId").put("type", "integer")
+                .put("description", "Restrict to a folder and descendants; requires spaceId");
         searchProps.putObject("topK").put("type", "integer").put("minimum", 1).put("maximum", 20)
                 .put("description", "Max hits to return (default 5)");
         ObjectNode strategy = searchProps.putObject("strategy");
@@ -199,6 +201,14 @@ public class McpDispatcher {
         evidenceProps.putObject("endMs").put("type", "integer")
                 .put("description", "Range end in milliseconds (optional)");
         evidenceSchema.putArray("required").add("mediaId");
+        ObjectNode catalog = tools.addObject();
+        catalog.put("name", "get_knowledge_catalog");
+        catalog.put("description", "Discover folders, shared source placements, published readiness and independent ingest jobs inside an authorized space.");
+        ObjectNode catalogSchema = catalog.putObject("inputSchema");
+        catalogSchema.put("type", "object");
+        catalogSchema.putObject("properties").putObject("spaceId").put("type", "integer");
+        catalogSchema.putArray("required").add("spaceId");
+
         return result;
     }
 
@@ -212,6 +222,7 @@ public class McpDispatcher {
                 case "search_video_knowledge" -> backend.searchKnowledge(
                         requiredString(args, "query", tool),
                         optionalLong(args, "spaceId"),
+                        optionalLong(args, "collectionId"),
                         optionalInt(args, "topK"),
                         optionalString(args, "strategy"));
                 case "ask_video_knowledge" -> backend.askKnowledge(
@@ -220,6 +231,7 @@ public class McpDispatcher {
                         optionalLong(args, "collectionId"),
                         optionalInt(args, "topK"),
                         optionalString(args, "strategy"));
+                case "get_knowledge_catalog" -> backend.knowledgeCatalog(requiredLong(args, "spaceId", tool));
                 case "get_video_evidence" -> backend.videoEvidence(
                         optionalLong(args, "mediaId"),
                         optionalLong(args, "startMs"),
@@ -252,6 +264,12 @@ public class McpDispatcher {
     private static String requiredString(JsonNode args, String field, String tool) {
         String value = args.path(field).asText("");
         if (value.isBlank()) throw new InvalidParams(tool + " requires a non-empty '" + field + "'");
+        return value;
+    }
+
+    private static Long requiredLong(JsonNode args, String field, String tool) {
+        Long value = optionalLong(args, field);
+        if (value == null || value <= 0) throw new InvalidParams(tool + " requires a positive '" + field + "'");
         return value;
     }
 

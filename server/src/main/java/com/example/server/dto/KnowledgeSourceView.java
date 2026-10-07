@@ -7,6 +7,7 @@ import java.util.List;
 
 public record KnowledgeSourceView(
         Long id,
+        Long placementId,
         String sourceType,
         Long spaceId,
         Long collectionId,
@@ -25,6 +26,7 @@ public record KnowledgeSourceView(
     public static KnowledgeSourceView from(KnowledgeSource source, List<String> tags) {
         return new KnowledgeSourceView(
                 source.getId(),
+                null,
                 source.getSourceType(),
                 source.getSpaceId(),
                 source.getCollectionId(),
@@ -35,5 +37,9 @@ public record KnowledgeSourceView(
                 tags == null ? List.of() : List.copyOf(tags),
                 source.getCreatedAt(),
                 source.getUpdatedAt());
+    }
+    public KnowledgeSourceView at(com.example.server.entity.KnowledgePlacement p) {
+        return new KnowledgeSourceView(id, p.getId(), sourceType, p.getSpaceId(), p.getCollectionId(),
+                mediaId, title, status, currentVersion, tags, createdAt, updatedAt);
     }
 }

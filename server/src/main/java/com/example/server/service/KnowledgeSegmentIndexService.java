@@ -44,6 +44,9 @@ public class KnowledgeSegmentIndexService {
     private final EmbeddingUtils embeddingUtils;
     private final KnowledgeAuditService auditService;
     private final String embeddingModel;
+    private final KnowledgeIndexPublisher publisher;
+    private final KnowledgeMetrics metrics;
+    private final org.redisson.api.RedissonClient locks;
 
     public KnowledgeSegmentIndexService(KnowledgeSourceService sourceService,
                                         KnowledgeSourceVersionMapper versionMapper,
@@ -53,7 +56,7 @@ public class KnowledgeSegmentIndexService {
                                         VideoChunkingService chunkingService,
                                         EmbeddingUtils embeddingUtils,
                                         KnowledgeAuditService auditService,
-                                        @Value("${ai.embedding.model:BAAI/bge-m3}") String embeddingModel) {
+                                        @Value("${ai.embedding.model:BAAI/bge-m3}") String embeddingModel, KnowledgeIndexPublisher publisher, org.redisson.api.RedissonClient locks, KnowledgeMetrics metrics) {
         this.sourceService = sourceService;
         this.versionMapper = versionMapper;
         this.segmentMapper = segmentMapper;
@@ -63,43 +66,51 @@ public class KnowledgeSegmentIndexService {
         this.embeddingUtils = embeddingUtils;
         this.auditService = auditService;
         this.embeddingModel = embeddingModel;
+        this.publisher = publisher;
+        this.metrics = metrics;
+        this.locks = locks;
     }
 
-    /**
-     * (Re)builds segments and vectors for a media asset. Throws on failure; callers that
-     * must not propagate (the analysis pipeline) catch and call {@link #markIndexFailed}.
-     *
-     * <p>Deliberately NOT transactional: a rollback would also erase the FAILED status that
-     * makes the failure visible. Every write is a delete-then-insert per artifact, so a
-     * partially applied rebuild is idempotent under the next rebuild instead of corrupting.</p>
-     */
+    /** Build a new generation; publish only after all embeddings and vector writes succeed. */
     public List<KnowledgeSegment> indexMedia(Long mediaId) {
+        var lock = locks.getLock("knowledge:index:" + mediaId);
+        boolean locked = false;
+        try {
+            locked = lock.tryLock(300, java.util.concurrent.TimeUnit.SECONDS);
+            if (!locked) throw new IllegalStateException("知识索引正在构建，请稍后重试");
+            return buildGeneration(mediaId);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("等待索引锁被中断", e);
+        } finally { if (locked && lock.isHeldByCurrentThread()) lock.unlock(); }
+    }
+
+    private List<KnowledgeSegment> buildGeneration(Long mediaId) {
         KnowledgeSource source = sourceService.requireSourceByMediaId(mediaId);
-        KnowledgeSourceVersion version = currentVersion(source);
+        KnowledgeSourceVersion latest = versionMapper.selectOne(new QueryWrapper<KnowledgeSourceVersion>()
+                .eq("source_id", source.getId()).orderByDesc("version_no").last("LIMIT 1"));
+        KnowledgeSourceVersion version = new KnowledgeSourceVersion();
+        version.setSourceId(source.getId());
+        version.setVersionNo(latest == null ? 1 : latest.getVersionNo() + 1);
+        version.setContentHash(source.getContentHash());
         version.setStatus(STATUS_INDEXING);
         version.setParserVersion(PARSER_VERSION);
         version.setEmbeddingModel(embeddingModel);
-        version.setFailureReason(null);
-        versionMapper.updateById(version);
+        versionMapper.insert(version);
         try {
-            List<KnowledgeSegment> segments = buildSegments(source, version);
-            if (segments.isEmpty()) {
-                throw new IllegalStateException("解析上下文为空，无法生成知识分段");
-            }
-            replaceSegments(source, segments);
+            List<KnowledgeSegment> segments = metrics.measure("ingest.chunking", () -> buildSegments(source, version));
+            if (segments.isEmpty()) throw new IllegalStateException("解析上下文为空，无法生成知识分段");
+            for (KnowledgeSegment segment : segments) segmentMapper.insert(segment);
             upsertVectors(source, version, segments);
-            version.setStatus(STATUS_READY);
-            versionMapper.updateById(version);
-            sourceService.updateIndexStatus(source, KnowledgeSourceService.STATUS_READY);
+            metrics.run("ingest.publish", () -> publisher.publish(source, version));
+            try {
             auditService.record(source.getOwnerUserId(), "SOURCE_INDEXED", "SOURCE", source.getId(),
                     source.getSpaceId(), source.getCollectionId(),
                     "segments=" + segments.size() + ";version=" + version.getVersionNo());
+            } catch (RuntimeException ignored) { /* Publication is committed; audit failure cannot invalidate it. */ }
             return segments;
         } catch (RuntimeException e) {
-            version.setStatus(STATUS_FAILED);
-            version.setFailureReason(abbreviate(e.getMessage(), 1000));
-            versionMapper.updateById(version);
-            sourceService.updateIndexStatus(source, KnowledgeSourceService.STATUS_FAILED);
+            publisher.fail(source, version, abbreviate(e.getMessage(), 1000));
             throw e;
         }
     }
@@ -139,8 +150,10 @@ public class KnowledgeSegmentIndexService {
         if (!userId.equals(source.getOwnerUserId())) {
             throw new SecurityException("无权访问该内容源");
         }
+        if (!STATUS_READY.equals(source.getStatus())) return List.of();
+        KnowledgeSourceVersion version = currentVersion(source);
         return segmentMapper.selectList(new QueryWrapper<KnowledgeSegment>()
-                .eq("media_id", mediaId)
+                .eq("media_id", mediaId).eq("version_id", version.getId())
                 .orderByAsc("start_ms"));
     }
 
@@ -172,33 +185,25 @@ public class KnowledgeSegmentIndexService {
         return segments;
     }
 
-    private void replaceSegments(KnowledgeSource source, List<KnowledgeSegment> segments) {
-        segmentMapper.delete(new QueryWrapper<KnowledgeSegment>()
-                .eq("source_id", source.getId()));
-        for (KnowledgeSegment segment : segments) {
-            segmentMapper.insert(segment);
-        }
-    }
-
     private void upsertVectors(KnowledgeSource source, KnowledgeSourceVersion version, List<KnowledgeSegment> segments) {
-        vectorStore.deleteSource(source.getId());
         List<QdrantVectorStore.KnowledgePoint> points = new ArrayList<>(segments.size());
         for (int offset = 0; offset < segments.size(); offset += EMBEDDING_BATCH_SIZE) {
             List<KnowledgeSegment> batch = segments.subList(offset,
                     Math.min(offset + EMBEDDING_BATCH_SIZE, segments.size()));
-            List<List<Double>> vectors = embeddingUtils.embedBatch(batch.stream().map(this::vectorText).toList());
+            List<List<Double>> vectors = metrics.measure("ingest.embedding",
+                    () -> embeddingUtils.embedBatch(batch.stream().map(this::vectorText).toList()));
             if (vectors.size() != batch.size()) {
                 throw new IllegalStateException("Embedding 返回数量与知识分段数量不一致");
             }
             for (int i = 0; i < batch.size(); i++) {
                 List<Double> vector = vectors.get(i);
-                if (vector.isEmpty()) continue;
+                if (vector.isEmpty()) throw new IllegalStateException("Embedding 返回空向量，取消索引发布");
                 KnowledgeSegment segment = batch.get(i);
                 points.add(new QdrantVectorStore.KnowledgePoint(
                         segment.getId(), vector, payload(source, version, segment)));
             }
         }
-        vectorStore.upsertKnowledge(points);
+        metrics.run("ingest.vector_write", () -> vectorStore.upsertKnowledge(points));
     }
 
     private String vectorText(KnowledgeSegment segment) {

@@ -70,7 +70,7 @@ class KnowledgeIngestServiceTest {
         KnowledgeIngestScan scan = service.ingest(7L, request(root.toString(), false));
 
         assertEquals(1, scan.getCreatedCount());
-        verify(dispatchService(service)).submitBulk(eq(media), anyString(), any());
+        verify(dispatchService(service), never()).submitBulk(eq(media), anyString(), any());
         verify(sourceService(service)).registerExternalLocation(7L, 21L,
                 root.resolve("clip.mp4").toString());
     }
@@ -132,7 +132,7 @@ class KnowledgeIngestServiceTest {
         lastMinioUtils = minioUtils;
 
         return new KnowledgeIngestService(sourceService, mediaService,
-                dispatchService, auditService, scanMapper, minioUtils, allowedRoots);
+                auditService, scanMapper, minioUtils, allowedRoots);
     }
 
     private static KnowledgeIngestRequest request(String rootPath, boolean dryRun) {

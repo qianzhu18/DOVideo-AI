@@ -36,7 +36,7 @@ class KnowledgeCollectionServiceTest {
         });
 
         KnowledgeCollectionService service = new KnowledgeCollectionService(
-                collectionMapper, sourceMapper, spaceService, mock(KnowledgeAuditService.class));
+                collectionMapper, sourceMapper, spaceService, mock(KnowledgeAuditService.class), mock(com.example.server.mapper.KnowledgePlacementMapper.class));
         KnowledgeCollectionView view = service.create(7L, 3L,
                 new KnowledgeCollectionCreateRequest(null, " Java ", null));
 
@@ -58,7 +58,7 @@ class KnowledgeCollectionServiceTest {
         when(collectionMapper.selectById(eq(9L))).thenReturn(foreignParent);
 
         KnowledgeCollectionService service = new KnowledgeCollectionService(
-                collectionMapper, sourceMapper, spaceService, mock(KnowledgeAuditService.class));
+                collectionMapper, sourceMapper, spaceService, mock(KnowledgeAuditService.class), mock(com.example.server.mapper.KnowledgePlacementMapper.class));
         BusinessException error = assertThrows(BusinessException.class,
                 () -> service.create(7L, 3L, new KnowledgeCollectionCreateRequest(9L, "JVM", 0)));
 
