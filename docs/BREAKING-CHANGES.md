@@ -45,3 +45,7 @@ Actuator 默认仅 health；`MANAGEMENT_EXPOSURE=health,prometheus,metrics` 显�
 新目录操作不再同步旧 Qdrant `spaceId/collectionId` payload，查询使用 MySQL placements 解析范围。旧后端依赖旧 payload，直接回滚二进制可能返回错误位置；需要修复/重建该投影并验证旧查询后才可回退。新增 schema 能保留，不表示旧行为一定兼容；具体回退需按发布数据制定。
 
 本轮未部署、未执行生产迁移或回退。未实现历史向量垃圾回收、CHANGED 稳定资产替换、跨版本会话引用契约或社区主体授权；不要把局部结构验收作为完整上线批准。
+
+## 独立评测运行（2026-10-08）
+
+增加 `knowledge.ingest.dispatch-enabled`（默认 true）。独立快照评测设 false，禁止 outbox 调度和失联任务恢复；正常产品保持 true。它不禁止显式 HTTP 写入或消费者收取已有消息，需独立 topic/group 和快照数据。质量基准不改变当前产品查询默认行为。
