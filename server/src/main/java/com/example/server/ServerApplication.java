@@ -5,6 +5,7 @@ import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 
+@org.springframework.scheduling.annotation.EnableScheduling
 @SpringBootApplication
 @MapperScan("com.example.server.mapper")
 public class ServerApplication {

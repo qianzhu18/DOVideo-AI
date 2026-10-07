@@ -19,6 +19,12 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class AiServicePersistenceTest {
+    private VideoPreparationService preparation(AgentCheckpointService checkpoints) {
+        VideoPreparationService preparation = mock(VideoPreparationService.class);
+        when(preparation.prepare(any(), anyString(), any(), any())).thenAnswer(call -> checkpoints.loadContext(((MediaFile) call.getArgument(0)).getId()));
+        return preparation;
+    }
+
     @Test
     void replayingOwnResultPreservesTheOriginalEvidenceFrameReferences() {
         MediaFileMapper mapper = mock(MediaFileMapper.class);
@@ -28,10 +34,10 @@ class AiServicePersistenceTest {
         VideoContext context = new VideoContext("source", "", List.of(
                 new VideoContext.VideoSegment(0, 1000, "transcript", List.of(), List.of("frames/original.jpg"))));
         when(checkpoints.loadContext(7L)).thenReturn(context);
-        AiService service = new AiService(mapper, mock(VideoContextService.class),
+        AiService service = new AiService(mapper, preparation(checkpoints),
                 mock(LongVideoContextService.class), mock(AgentLoopService.class), checkpoints, mock(AgentTelemetry.class),
-                mock(MediaService.class), mock(TaskEventService.class), mock(RedissonClient.class),
-                mock(StringRedisTemplate.class), mock(ModeRegistry.class), mock(DeepSeekUtils.class), new ObjectMapper());
+                mock(MediaService.class), mock(TaskEventService.class), mock(ModeRegistry.class), mock(KnowledgeIngestJobService.class), mock(KnowledgeSourceService.class),
+                mock(StringRedisTemplate.class), mock(DeepSeekUtils.class), new ObjectMapper());
         AgentState result = new AgentState("goal", null,
                 new AnalysisResult("summary", List.of("done"), List.of(), List.of(), List.of()), null, 1);
 
@@ -61,10 +67,10 @@ class AiServicePersistenceTest {
         AgentState result = new AgentState("goal", null,
                 new AnalysisResult("summary", List.of("done"), List.of(), List.of(), List.of()), null, 1);
         when(loop.run(eq(7L), any(VideoContext.class), any())).thenReturn(result);
-        AiService service = new AiService(mapper, mock(VideoContextService.class),
+        AiService service = new AiService(mapper, preparation(checkpoints),
                 mock(LongVideoContextService.class), loop, checkpoints, mock(AgentTelemetry.class),
-                mock(MediaService.class), mock(TaskEventService.class), mock(RedissonClient.class),
-                mock(StringRedisTemplate.class), mock(ModeRegistry.class), mock(DeepSeekUtils.class), new ObjectMapper());
+                mock(MediaService.class), mock(TaskEventService.class), mock(ModeRegistry.class), mock(KnowledgeIngestJobService.class), mock(KnowledgeSourceService.class),
+                mock(StringRedisTemplate.class), mock(DeepSeekUtils.class), new ObjectMapper());
 
         service.asyncAnalyze(7L, "goal", AnalysisMode.GENERAL);
 

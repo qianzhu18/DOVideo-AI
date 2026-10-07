@@ -21,8 +21,11 @@ import dev.langchain4j.exception.NonRetriableException;
 import dev.langchain4j.exception.RetriableException;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
-import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
+import dev.langchain4j.model.chat.StreamingChatModel;
+import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
+import dev.langchain4j.model.chat.response.ChatResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -38,6 +41,9 @@ import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 @Component
 public class DeepSeekUtils {
@@ -55,6 +61,7 @@ public class DeepSeekUtils {
             """;
 
     private final ChatModel chatModel;
+    private final StreamingChatModel streamingChatModel;
     private final ObjectMapper objectMapper;
     private final AgentTelemetry telemetry;
     private final ThreadPoolTaskExecutor modelCallExecutor;
@@ -62,12 +69,12 @@ public class DeepSeekUtils {
     private final double inputPricePerMillion;
     private final double outputPricePerMillion;
 
-    public DeepSeekUtils(@Value("${ai.deepseek.api-key}") String apiKey,
-                         @Value("${ai.deepseek.base-url}") String baseUrl,
-                         @Value("${ai.deepseek.model:deepseek-ai/DeepSeek-V3.2}") String modelName,
-                         @Value("${ai.deepseek.timeout-seconds:300}") long timeoutSeconds,
-                         @Value("${ai.deepseek.input-price-per-million:0}") double inputPricePerMillion,
-                         @Value("${ai.deepseek.output-price-per-million:0}") double outputPricePerMillion,
+    public DeepSeekUtils(@Value("${ai.model-gateway.api-key}") String apiKey,
+                         @Value("${ai.model-gateway.base-url}") String baseUrl,
+                         @Value("${ai.llm.model:Qwen/Qwen3.8-27B}") String modelName,
+                         @Value("${ai.model-gateway.timeout-seconds:300}") long timeoutSeconds,
+                         @Value("${ai.model-gateway.input-price-per-million:0}") double inputPricePerMillion,
+                         @Value("${ai.model-gateway.output-price-per-million:0}") double outputPricePerMillion,
                          @Value("${agent.budget.max-estimated-cost:0}") double maxEstimatedCost,
                          AgentTelemetry telemetry,
                          ObjectMapper objectMapper,
@@ -89,6 +96,12 @@ public class DeepSeekUtils {
                 // Retry policy is handled by chat() below to avoid nested retries.
                 .timeout(Duration.ofSeconds(timeoutSeconds))
                 .maxRetries(0)
+                .build();
+        this.streamingChatModel = OpenAiStreamingChatModel.builder()
+                .baseUrl(baseUrl)
+                .apiKey(apiKey)
+                .modelName(modelName)
+                .timeout(Duration.ofSeconds(timeoutSeconds))
                 .build();
         this.objectMapper = objectMapper;
         this.telemetry = telemetry;
@@ -205,6 +218,59 @@ public class DeepSeekUtils {
             return structuredChat("RETRIEVAL_PLANNER", prompt, VideoRetrievalIntent.class);
         } catch (Exception e) {
             throw new IllegalStateException("视频检索目标拆解失败", e);
+        }
+    }
+
+    /**
+     * Structured generation for the cross-video knowledge layer. The caller is responsible for
+     * treating its output as untrusted and validating every source reference before returning it.
+     */
+    public <T> T structuredKnowledgeChat(String prompt, Class<T> type) {
+        try {
+            return structuredChat("KNOWLEDGE_ANSWER", prompt, type);
+        } catch (Exception e) {
+            throw new IllegalStateException("知识库回答生成失败", e);
+        }
+    }
+
+    /** Stream structured knowledge output while retaining the complete JSON for final parsing. */
+    public <T> T streamingStructuredKnowledgeChat(String prompt, Class<T> type,
+                                                  Consumer<String> partialResponse) {
+        CountDownLatch completed = new CountDownLatch(1);
+        StringBuilder content = new StringBuilder();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        try {
+            streamingChatModel.chat(List.of(SystemMessage.from(SYSTEM_POLICY), UserMessage.from(prompt)),
+                    new StreamingChatResponseHandler() {
+                        @Override
+                        public void onPartialResponse(String delta) {
+                            if (delta == null || delta.isEmpty()) return;
+                            content.append(delta);
+                            partialResponse.accept(delta);
+                        }
+
+                        @Override
+                        public void onCompleteResponse(ChatResponse response) {
+                            completed.countDown();
+                        }
+
+                        @Override
+                        public void onError(Throwable error) {
+                            failure.set(error);
+                            completed.countDown();
+                        }
+                    });
+            if (!completed.await(modelTimeoutMs + 5_000, TimeUnit.MILLISECONDS)) {
+                throw new TimeoutException("流式知识库回答超时");
+            }
+            if (failure.get() != null) throw new IllegalStateException("流式模型调用失败", failure.get());
+            if (content.isEmpty()) throw new IllegalStateException("流式模型没有返回内容");
+            return parseJson(content.toString(), type);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("等待流式知识库回答时被中断", e);
+        } catch (Exception e) {
+            throw new IllegalStateException("流式知识库回答生成失败", e);
         }
     }
 
@@ -543,10 +609,12 @@ public class DeepSeekUtils {
         throw new IllegalStateException("模型调用达到最大重试次数", lastError);
     }
 
-    private boolean isRetriableModelFailure(Throwable error) {
+    static boolean isRetriableModelFailure(Throwable error) {
         Throwable current = error;
         for (int depth = 0; current != null && depth < MAX_CAUSE_DEPTH; depth++) {
             if (current instanceof NonRetriableException) return false;
+            // Retrying cannot help once the agent time budget is gone; fail fast instead.
+            if (current instanceof AgentExecutionBudget.DeadlineExceededException) return false;
             if (current instanceof RetriableException) return true;
             if (current instanceof HttpException httpException) {
                 int status = httpException.statusCode();
@@ -555,7 +623,11 @@ public class DeepSeekUtils {
             if (current.getCause() == current) break;
             current = current.getCause();
         }
-        return false;
+        // Transport-level failures (EOF mid-body, connection reset, SSL handshake) surface
+        // as plain IOExceptions with no HTTP status. They are overwhelmingly transient, so
+        // the safe default is retry: classifying one as permanent dead-letters an entire
+        // agent run on a single network blip.
+        return true;
     }
 
     private void waitBeforeRetry(int attempt) {

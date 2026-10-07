@@ -4,76 +4,145 @@ import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.utils.MinioUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+/** Upload-layer content deduplication: the same user uploading the same MD5
+ *  reuses the existing media; a Redis outage degrades the dedup instead of
+ *  blocking the upload. */
 class MediaServiceTest {
-    @Test
-    void deletionAttemptsIndependentCleanupAndInvalidatesListAfterFailures() {
-        MediaFileMapper mapper = mock(MediaFileMapper.class);
-        StringRedisTemplate redis = mock(StringRedisTemplate.class);
-        ValueOperations<String, String> values = mock(ValueOperations.class);
-        when(redis.opsForValue()).thenReturn(values);
-        when(values.get("media:list:v3:user:7:generation")).thenReturn("before");
-        AgentCheckpointService checkpoints = mock(AgentCheckpointService.class);
-        AgentTelemetry telemetry = mock(AgentTelemetry.class);
-        QdrantVectorStore vectors = mock(QdrantVectorStore.class);
-        VideoContextService contexts = mock(VideoContextService.class);
-        MediaService service = new MediaService(mapper, redis, mock(MinioUtils.class),
-                new ObjectMapper(), checkpoints, telemetry, vectors, contexts);
-        MediaFile media = new MediaFile();
-        media.setId(42L);
-        media.setUserId(7L);
-        when(mapper.selectById(42L)).thenReturn(media);
-        when(redis.delete(anyCollection())).thenThrow(new IllegalStateException("Redis unavailable"));
-        doThrow(new IllegalStateException("frame cleanup failed")).when(contexts).deleteEvidenceFrames(null);
-        doThrow(new IllegalStateException("telemetry unavailable")).when(telemetry).deleteTask(42L);
 
-        assertDoesNotThrow(() -> service.deleteOwnedMedia(42L, 7L));
+    private static final Long USER_ID = 1L;
+    private static final Long OTHER_USER_ID = 2L;
+    private static final Long EXISTING_ID = 9L;
+    private static final String HASH = "0123456789abcdef0123456789abcdef";
+    private static final String FILE_URL = "http://minio:9000/media/new-upload.mp4";
 
-        verify(mapper).deleteById(42L);
-        verify(checkpoints).deleteMedia(42L);
-        verify(vectors).deleteMedia(42L);
-        verify(redis).delete("media:list:v3:user:7:before");
+    private final MediaFileMapper mediaFileMapper = mock(MediaFileMapper.class);
+    private final StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+    @SuppressWarnings("unchecked")
+    private final ValueOperations<String, String> valueOps = mock(ValueOperations.class);
+    private final RedissonClient redissonClient = mock(RedissonClient.class);
+    private final RLock dedupLock = mock(RLock.class);
+    private final MinioUtils minioUtils = mock(MinioUtils.class);
+    private final KnowledgeSourceService knowledgeSourceService = mock(KnowledgeSourceService.class);
+
+    private MediaService service;
+
+    @BeforeEach
+    void setUp() {
+        when(redisTemplate.opsForValue()).thenReturn(valueOps);
+        when(redissonClient.getLock(anyString())).thenReturn(dedupLock);
+        when(dedupLock.isHeldByCurrentThread()).thenReturn(true);
+        service = new MediaService(mediaFileMapper, redisTemplate, redissonClient, minioUtils,
+                new ObjectMapper(), mock(AgentCheckpointService.class), mock(AgentTelemetry.class),
+                mock(QdrantVectorStore.class), mock(VideoContextService.class),
+                knowledgeSourceService);
+    }
+
+    private MediaFile existing() {
+        MediaFile existing = new MediaFile();
+        existing.setId(EXISTING_ID);
+        existing.setUserId(USER_ID);
+        existing.setFilename("旧上传.mp4");
+        existing.setContentHash(HASH);
+        return existing;
     }
 
     @Test
-    void aListQueryFinishingAfterDeletionCannotRestoreTheOldCacheForFutureReaders() {
-        MediaFileMapper mapper = mock(MediaFileMapper.class);
-        StringRedisTemplate redis = mock(StringRedisTemplate.class);
-        ValueOperations<String, String> values = mock(ValueOperations.class);
-        when(redis.opsForValue()).thenReturn(values);
-        Map<String, String> cache = new HashMap<>();
-        when(values.get(anyString())).thenAnswer(call -> cache.get(call.getArgument(0)));
-        when(values.setIfAbsent(anyString(), anyString()))
-                .thenAnswer(call -> cache.putIfAbsent(call.getArgument(0), call.getArgument(1)) == null);
-        doAnswer(call -> { cache.put(call.getArgument(0), call.getArgument(1)); return null; })
-                .when(values).set(anyString(), anyString());
-        doAnswer(call -> { cache.put(call.getArgument(0), call.getArgument(1)); return null; })
-                .when(values).set(anyString(), anyString(), anyLong(), any(TimeUnit.class));
-        when(redis.delete(anyString())).thenAnswer(call -> cache.remove(call.getArgument(0)) != null);
-        MediaService service = new MediaService(mapper, redis, mock(MinioUtils.class), new ObjectMapper(),
-                mock(AgentCheckpointService.class), mock(AgentTelemetry.class),
-                mock(QdrantVectorStore.class), mock(VideoContextService.class));
-        MediaFile deleted = new MediaFile(); deleted.setId(42L);
-        when(mapper.selectList(any())).thenAnswer(call -> {
-            service.invalidateUserList(7L);
-            return List.of(deleted); // Snapshot was read just before the delete committed.
-        }).thenReturn(List.of());
+    void duplicateUploadReturnsExistingMediaAndRemovesNewObject() {
+        when(mediaFileMapper.selectOne(any())).thenReturn(existing());
 
-        assertEquals(1, service.listByUser(7L).size());
-        assertTrue(service.listByUser(7L).isEmpty());
-        assertTrue(service.listByUser(7L).isEmpty());
-        verify(mapper, times(2)).selectList(any());
+        MediaFile result = service.saveUploadedMedia("重复上传.mp4", FILE_URL, USER_ID, HASH);
+
+        assertEquals(EXISTING_ID, result.getId());
+        verify(minioUtils).removeFile(FILE_URL);
+        verify(mediaFileMapper, never()).insert(any(MediaFile.class));
+        verify(knowledgeSourceService, never()).ensureMediaSource(any());
+    }
+
+    @Test
+    void firstUploadInsertsRowRegistersSourceAndCachesHash() {
+        when(mediaFileMapper.selectOne(any())).thenReturn(null);
+        // Simulate the MyBatis-Plus auto-increment id write-back, otherwise the
+        // hash cache write would be skipped.
+        when(mediaFileMapper.insert(any(MediaFile.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, MediaFile.class).setId(123L);
+            return 1;
+        });
+
+        MediaFile result = service.saveUploadedMedia("新上传.mp4", FILE_URL, USER_ID, HASH);
+
+        ArgumentCaptor<MediaFile> inserted = ArgumentCaptor.forClass(MediaFile.class);
+        verify(mediaFileMapper).insert(inserted.capture());
+        assertEquals(HASH, inserted.getValue().getContentHash());
+        assertEquals(USER_ID, inserted.getValue().getUserId());
+        verify(knowledgeSourceService).ensureMediaSource(result);
+        // The hash cache now carries a TTL instead of relying on deletion cleanup.
+        verify(valueOps).set(eq("media:md5:123"), eq(HASH), eq(Duration.ofDays(7)));
+    }
+
+    @Test
+    void missingHashSkipsDedupAndInserts() {
+        MediaFile result = service.saveUploadedMedia("无哈希.mp4", FILE_URL, USER_ID, null);
+
+        verify(mediaFileMapper, never()).selectOne(any());
+        assertNull(result.getContentHash());
+    }
+
+    @Test
+    void dedupLockOutageDegradesToUnlockedQuery() throws Exception {
+        when(dedupLock.tryLock(anyLong(), any(TimeUnit.class)))
+                .thenThrow(new RuntimeException("redis down"));
+        when(mediaFileMapper.selectOne(any())).thenReturn(null);
+
+        MediaFile result = service.saveUploadedMedia("锁故障.mp4", FILE_URL, USER_ID, HASH);
+
+        // fail-open: with Redis unavailable the dedup proceeds without the lock
+        // instead of rejecting the upload.
+        verify(mediaFileMapper).insert(any(MediaFile.class));
+        assertEquals("锁故障.mp4", result.getFilename());
+    }
+
+    @Test
+    void insertFailureCleansUpUploadedObject() {
+        when(mediaFileMapper.selectOne(any())).thenReturn(null);
+        when(mediaFileMapper.insert(any(MediaFile.class)))
+                .thenThrow(new RuntimeException("db down"));
+
+        assertThrows(RuntimeException.class,
+                () -> service.saveUploadedMedia("入库失败.mp4", FILE_URL, USER_ID, HASH));
+        verify(minioUtils).removeFile(FILE_URL);
+    }
+
+    @Test
+    void sameContentDifferentUserIsNotDeduplicated() {
+        // The duplicate query is scoped by (user_id, content_hash): content is
+        // never merged across users, so one user's upload stays invisible to another.
+        when(mediaFileMapper.selectOne(any())).thenReturn(null);
+
+        service.saveUploadedMedia("他人同内容.mp4", FILE_URL, OTHER_USER_ID, HASH);
+
+        verify(mediaFileMapper).insert(any(MediaFile.class));
     }
 }

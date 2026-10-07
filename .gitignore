@@ -5,6 +5,8 @@
 .env.*
 !.env.example
 server/target/
+mcp-server/target/
+mcp-server/data/
 client/node_modules/
 client/dist/
 mysql/data/
@@ -12,4 +14,7 @@ mysql/logs/
 redis/data/
 qdrant/data/
 minio/data/
+server/data/muku-batches/
  
+
+__pycache__/

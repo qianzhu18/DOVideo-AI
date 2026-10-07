@@ -103,3 +103,59 @@ export async function apiRequest(path, options = {}) {
 
   return unwrap(response, envelope)
 }
+
+/** Multipart uploads use XMLHttpRequest so the UI can report bytes while a chunk is in flight. */
+export function apiUploadRequest(path, { body, signal, onUploadProgress, timeoutMs = 60_000 } = {}) {
+  if (typeof XMLHttpRequest === 'undefined') return apiRequest(path, { method: 'POST', body, signal })
+  const isCurrentSession = captureAuthSession()
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${API_BASE}${path}`)
+    xhr.timeout = timeoutMs
+    const token = localStorage.getItem(TOKEN_KEY)
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+
+    const cleanup = () => signal?.removeEventListener('abort', abort)
+    const abort = () => xhr.abort()
+    if (signal?.aborted) {
+      reject(new DOMException('The operation was aborted', 'AbortError'))
+      return
+    }
+    signal?.addEventListener('abort', abort, { once: true })
+    xhr.upload.onprogress = event => {
+      if (event.lengthComputable) onUploadProgress?.(event.loaded, event.total)
+    }
+    xhr.onload = () => {
+      cleanup()
+      if (xhr.status === 401 && token && isCurrentSession() && !path.startsWith('/user/')) {
+        clearAuthToken()
+        window.dispatchEvent(new Event('auth-expired'))
+      }
+      let text = xhr.responseText || ''
+      try {
+        const payload = JSON.parse(text)
+        if (isEnvelope(payload)) text = xhr.status >= 200 && xhr.status < 300
+          ? dataAsText(payload.data)
+          : (payload.message || '')
+      } catch {
+        // Keep non-JSON error bodies as text.
+      }
+      resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, text: async () => text })
+    }
+    xhr.onerror = () => {
+      cleanup()
+      reject(new Error('上传分片时网络连接中断'))
+    }
+    xhr.ontimeout = () => {
+      cleanup()
+      const error = new Error(`分片上传超过 ${Math.round(timeoutMs / 1000)} 秒仍未完成`)
+      error.status = 408
+      reject(error)
+    }
+    xhr.onabort = () => {
+      cleanup()
+      reject(new DOMException('The operation was aborted', 'AbortError'))
+    }
+    xhr.send(body)
+  })
+}

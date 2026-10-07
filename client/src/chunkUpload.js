@@ -1,4 +1,4 @@
-import { apiRequest } from './api.js'
+import { apiRequest, apiUploadRequest } from './api.js'
 
 const CHUNK_SIZE = 5 * 1024 * 1024
 const UPLOAD_CONCURRENCY = 3
@@ -129,23 +129,26 @@ export async function uploadVideoInChunks(file, onProgress = () => {}, signal, u
   const resumedChunks = totalChunks - pendingChunks.length
   const meter = createSpeedMeter()
   const retrying = new Map()
+  const inFlightBytes = new Map()
   let completedChunks = resumedChunks
 
   const emit = phase => {
-    const transferred = uploadedBytes - resumedBytes
+    const inFlight = [...inFlightBytes.values()].reduce((sum, bytes) => sum + bytes, 0)
+    const visibleUploadedBytes = Math.min(totalBytes, uploadedBytes + inFlight)
+    const transferred = visibleUploadedBytes - resumedBytes
     const speed = meter.speed(transferred)
-    const remainingBytes = Math.max(0, totalBytes - uploadedBytes)
+    const remainingBytes = Math.max(0, totalBytes - visibleUploadedBytes)
     const attempts = [...retrying.values()]
     onProgress({
       phase,
       completedChunks,
       totalChunks,
-      uploadedBytes,
+      uploadedBytes: visibleUploadedBytes,
       totalBytes,
       resumedBytes,
       resumedChunks,
       percent: totalBytes
-        ? Math.min(100, Math.round((uploadedBytes / totalBytes) * 100))
+        ? Math.min(100, Math.round((visibleUploadedBytes / totalBytes) * 100))
         : 0,
       bytesPerSecond: speed,
       etaSeconds: speed && remainingBytes ? remainingBytes / speed : null,
@@ -167,17 +170,28 @@ export async function uploadVideoInChunks(file, onProgress = () => {}, signal, u
       }
       const index = pendingChunks[cursor++]
       try {
-        await uploadChunkWithRetry(file, uploadId, index, totalChunks, signal, attempt => {
-          retrying.set(index, attempt)
-          emit('uploading')
+        await uploadChunkWithRetry(file, uploadId, index, totalChunks, signal, {
+          onRetry: attempt => {
+            retrying.set(index, attempt)
+            inFlightBytes.set(index, 0)
+            emit('uploading')
+          },
+          onProgress: bytes => {
+            inFlightBytes.set(index, bytes)
+            meter.record(uploadedBytes - resumedBytes + [...inFlightBytes.values()].reduce((sum, value) => sum + value, 0))
+            emit('uploading')
+          }
         })
         retrying.delete(index)
+        inFlightBytes.delete(index)
         uploadedBytes += chunkSize(file, index)
         completedChunks += 1
         meter.record(uploadedBytes - resumedBytes)
         emit('uploading')
       } catch (error) {
         retrying.delete(index)
+        inFlightBytes.delete(index)
+        emit('uploading')
         fatalError = error
       }
     }
@@ -281,12 +295,12 @@ async function initializeUpload(filename, totalChunks, signal) {
   return body
 }
 
-async function uploadChunkWithRetry(file, uploadId, chunkIndex, totalChunks, signal, onRetry) {
+async function uploadChunkWithRetry(file, uploadId, chunkIndex, totalChunks, signal, { onRetry, onProgress }) {
   let lastError = null
   for (let attempt = 1; attempt <= CHUNK_MAX_ATTEMPTS; attempt += 1) {
     throwIfAborted(signal)
     try {
-      await uploadChunk(file, uploadId, chunkIndex, totalChunks, signal)
+      await uploadChunk(file, uploadId, chunkIndex, totalChunks, signal, onProgress)
       return
     } catch (error) {
       if (isAbortError(error, signal)) throw new UploadAbortedError()
@@ -301,7 +315,7 @@ async function uploadChunkWithRetry(file, uploadId, chunkIndex, totalChunks, sig
   )
 }
 
-async function uploadChunk(file, uploadId, chunkIndex, totalChunks, signal) {
+async function uploadChunk(file, uploadId, chunkIndex, totalChunks, signal, onProgress) {
   const [start, end] = chunkBounds(file, chunkIndex)
   const formData = new FormData()
   formData.append('uploadId', uploadId)
@@ -309,10 +323,11 @@ async function uploadChunk(file, uploadId, chunkIndex, totalChunks, signal) {
   formData.append('totalChunks', String(totalChunks))
   formData.append('file', file.slice(start, end))
 
-  const response = await uploadRequest('/media/upload-chunk', {
-    method: 'POST',
+  const chunkBytes = end - start
+  const response = await apiUploadRequest('/media/upload-chunk', {
     body: formData,
-    signal
+    signal,
+    onUploadProgress: (loaded, total) => onProgress?.(total ? Math.min(chunkBytes, Math.round((loaded / total) * chunkBytes)) : 0)
   })
   if (response.ok) return
   const error = new Error(await readErrorText(response) || '服务端未接收该分片')

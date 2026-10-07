@@ -9,8 +9,11 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
@@ -35,33 +38,49 @@ public class MediaService {
 
     private final MediaFileMapper mediaFileMapper;
     private final StringRedisTemplate redisTemplate;
+    private final RedissonClient redissonClient;
     private final MinioUtils minioUtils;
     private final ObjectMapper objectMapper;
     private final AgentCheckpointService checkpointService;
     private final AgentTelemetry telemetry;
     private final QdrantVectorStore vectorStore;
     private final VideoContextService videoContextService;
+    private final KnowledgeSourceService knowledgeSourceService;
 
     private static final String MEDIA_MD5_KEY_PREFIX = "media:md5:";
+    /** The hash cache previously had no TTL and relied on deletion cleanup alone; a stale key leaked forever when a media row was removed externally. */
+    private static final java.time.Duration MEDIA_MD5_TTL = java.time.Duration.ofDays(7);
     private static final Set<String> VIDEO_SUFFIXES = Set.of(
             ".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v");
 
+    /** Suffix check shared with the local-directory ingest scanner. */
+    public static boolean isVideoFile(String filename) {
+        if (filename == null) return false;
+        int dot = filename.lastIndexOf('.');
+        String suffix = dot < 0 ? "" : filename.substring(dot).toLowerCase(java.util.Locale.ROOT);
+        return VIDEO_SUFFIXES.contains(suffix);
+    }
+
     public MediaService(MediaFileMapper mediaFileMapper,
                         StringRedisTemplate redisTemplate,
+                        RedissonClient redissonClient,
                         MinioUtils minioUtils,
                         ObjectMapper objectMapper,
                         AgentCheckpointService checkpointService,
                         AgentTelemetry telemetry,
                         QdrantVectorStore vectorStore,
-                        VideoContextService videoContextService) {
+                        VideoContextService videoContextService,
+                        KnowledgeSourceService knowledgeSourceService) {
         this.mediaFileMapper = mediaFileMapper;
         this.redisTemplate = redisTemplate;
+        this.redissonClient = redissonClient;
         this.minioUtils = minioUtils;
         this.objectMapper = objectMapper;
         this.checkpointService = checkpointService;
         this.telemetry = telemetry;
         this.vectorStore = vectorStore;
         this.videoContextService = videoContextService;
+        this.knowledgeSourceService = knowledgeSourceService;
     }
 
     public String calculateMd5(MultipartFile file) throws IOException {
@@ -79,13 +98,40 @@ public class MediaService {
     public void rememberContentHash(Long mediaId, String md5) {
         if (mediaId == null || md5 == null || md5.isBlank()) return;
         try {
-            redisTemplate.opsForValue().set(MEDIA_MD5_KEY_PREFIX + mediaId, md5);
+            redisTemplate.opsForValue().set(MEDIA_MD5_KEY_PREFIX + mediaId, md5, MEDIA_MD5_TTL);
         } catch (RuntimeException e) {
             log.warn("media_hash_cache_write_failed mediaId={}", mediaId, e);
         }
     }
 
+    /**
+     * The single entry point for persisting an upload, with <strong>per-user
+     * content deduplication</strong>: when the same user uploads a file whose
+     * MD5 already exists, the existing media row is reused and the freshly
+     * uploaded object is removed, instead of inserting another duplicate asset
+     * (previously only the analysis layer reused results by content hash —
+     * storage and indexing still doubled).
+     *
+     * <p>The dedup check is serialized per (userId, md5) with a Redisson lock.
+     * The lock covers the query plus the insert statement but not the
+     * transaction commit, so two extreme concurrent uploads can still each
+     * leave one row; that residue is absorbed by the analysis-layer content
+     * reuse and costs one redundant object, never correctness. When Redis is
+     * unavailable the check degrades to a lock-free query (fail-open) and the
+     * upload proceeds.
+     */
+    @Transactional
     public MediaFile saveUploadedMedia(String filename, String fileUrl, Long userId, String md5) {
+        if (md5 != null && !md5.isBlank()) {
+            MediaFile existing = findDuplicateByContent(userId, md5);
+            if (existing != null) {
+                log.info("media_upload_deduplicated userId={} existingMediaId={} contentHash={}",
+                        userId, existing.getId(), md5);
+                removeUploadedObject(fileUrl,
+                        new IllegalStateException("duplicate content of media " + existing.getId()));
+                return existing;
+            }
+        }
         MediaFile mediaFile = new MediaFile();
         mediaFile.setFilename(normalizeVideoFilename(filename));
         mediaFile.setFilePath(fileUrl);
@@ -96,11 +142,41 @@ public class MediaService {
         try {
             mediaFileMapper.insert(mediaFile);
             rememberContentHash(mediaFile.getId(), md5);
+            knowledgeSourceService.ensureMediaSource(mediaFile);
             invalidateUserList(userId);
             return mediaFile;
         } catch (RuntimeException e) {
             removeUploadedObject(fileUrl, e);
             throw e;
+        }
+    }
+
+    /**
+     * Looks up a duplicate while holding the dedup lock; degrades to a
+     * lock-free query when the lock cannot be acquired. The watchdog variant
+     * of tryLock (no explicit lease) auto-renews the lease until unlock, so a
+     * slow insert can never outlive its own lock.
+     */
+    public MediaFile findDuplicateByContent(Long userId, String md5) {
+        RLock dedupLock = redissonClient.getLock("lock:media:dedup:" + userId + ":" + md5);
+        boolean locked = false;
+        try {
+            locked = dedupLock.tryLock(3, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (RuntimeException e) {
+            log.warn("media_dedup_lock_unavailable userId={}", userId, e);
+        }
+        try {
+            return mediaFileMapper.selectOne(new QueryWrapper<MediaFile>()
+                    .eq("user_id", userId)
+                    .eq("content_hash", md5)
+                    .orderByDesc("id")
+                    .last("LIMIT 1"));
+        } finally {
+            if (locked && dedupLock.isHeldByCurrentThread()) {
+                dedupLock.unlock();
+            }
         }
     }
 
@@ -146,8 +222,10 @@ public class MediaService {
         return persisted;
     }
 
+    @Transactional
     public void deleteOwnedMedia(Long mediaId, Long userId) {
         MediaFile mediaFile = requireOwnedMedia(mediaId, userId);
+        knowledgeSourceService.markMediaDeleted(userId, mediaId);
         mediaFileMapper.deleteById(mediaId);
         if (mediaFile.getFilePath() != null && mediaFile.getFilePath().startsWith("http")) {
             try {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test, { beforeEach } from 'node:test'
-import { apiRequest, setAuthToken } from './api.js'
+import { apiRequest, apiUploadRequest, setAuthToken } from './api.js'
 
 beforeEach(() => {
   const storage = new Map()
@@ -33,6 +33,31 @@ test('a stale 401 cannot log out a newer login', async () => {
   await request
   assert.equal(localStorage.getItem('authToken'), 'new-token')
   assert.equal(expired, 0)
+})
+
+test('a chunk upload from an old session cannot expire a newer login', async () => {
+  let xhr
+  const previous = globalThis.XMLHttpRequest
+  globalThis.XMLHttpRequest = class {
+    constructor() { xhr = this; this.upload = {}; this.status = 401; this.responseText = 'expired' }
+    open() {}
+    setRequestHeader() {}
+    send() {}
+  }
+  try {
+    setAuthToken('old-upload-session')
+    let expired = 0
+    window.addEventListener('auth-expired', () => { expired += 1 })
+    const upload = apiUploadRequest('/media/upload-chunk', {body: new FormData()})
+    setAuthToken('new-upload-session')
+    xhr.onload()
+    assert.equal((await upload).status, 401)
+    assert.equal(localStorage.getItem('authToken'), 'new-upload-session')
+    assert.equal(expired, 0)
+  } finally {
+    if (previous === undefined) delete globalThis.XMLHttpRequest
+    else globalThis.XMLHttpRequest = previous
+  }
 })
 
 test('a current 401 clears login and reports expiry once', async () => {

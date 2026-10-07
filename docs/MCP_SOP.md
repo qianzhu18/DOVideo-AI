@@ -1,0 +1,76 @@
+# MCP 接入与验收 SOP
+
+状态：`active`
+最后复核：2026-10-07
+
+本页维护当前五工具与认证契约。交付结果见 [CURRENT](CURRENT.md)，9 月四工具记录保留在 [历史 MCP 验收](archive/MCP接入验收-2026-09-27.md)。
+
+## 认证与启动
+
+外部客户端使用 `MCP_CLIENT_TOKENS` 中的一枚 Bearer token 访问 `mcp-server :9091/mcp`；适配器使用 `DOVIDEO_API_USERNAME/PASSWORD` 登录 Java 后端 `:9090`。两类凭据分别配置，客户端令牌不是上游登录会话。
+
+当前所有客户端令牌共用一个上游账号，所以只能看到该账号的知识库。这不是社区多成员权限映射。服务账号的知识范围决定对外可见范围。
+
+在 `.env` 配置客户端随机令牌和真实上游账号凭据，然后使用 `scripts/dev-up.sh` 启动。没有配置客户端令牌时脚本跳过 MCP。服务账号模式能在 40100 后重登录重试一次；静态 `DOVIDEO_API_TOKEN` 模式仍存在，但没有这条刷新路径，不应当作持久接入方案。账号注册不会替另一个账号授权知识。
+
+按实际启动 URL 配置客户端；默认配置示例：
+
+```json
+{
+  "mcpServers": {
+    "dovideo-knowledge": {
+      "url": "http://127.0.0.1:9091/mcp",
+      "headers": {"Authorization": "Bearer <管理员提供的客户端令牌>"}
+    }
+  }
+}
+```
+
+令牌只通过现有凭据渠道配置，不写进报告或截图。适配器通过后端 API 访问知识，不直接访问数据库、向量库或 MinIO。
+
+## 五个只读工具
+
+| 工具 | 用途 | 关键参数与范围 |
+| --- | --- | --- |
+| `list_knowledge_spaces` | 列上游账号拥有的空间 | 无参数 |
+| `get_knowledge_catalog` | 发现空间目录、source、placement、入库 job | `spaceId` 必填；仅允许拥有的空间 |
+| `search_video_knowledge` | 检索原始片段，包含来源与时间 | `query` 必填；`spaceId`、`collectionId`、`topK≤20`、`strategy`；目录参数要求指定空间 |
+| `ask_video_knowledge` | 单轮自然语言回答与引用、证据不足拒答 | `query` 必填；`spaceId`、`collectionId`、`topK≤20`、`strategy` |
+| `get_video_evidence` | 读取视频当前已发布分段 | `mediaId` 必填，`startMs/endMs` 可选；含 transcript/OCR/summary，摘要不是原视频逐字引文 |
+
+`strategy` 为 vector/keyword/hybrid。省略 `spaceId` 时 search 最多扇出十个拥有的空间，结果按 segmentId 去重；ask 使用默认空间。为避免这个尚未统一的默认契约，应先列空间/目录，再给 search 和 ask 传同一显式范围。
+
+目录工具的 source/placement 表示组织关系，job 表示处理状态。还未 READY 不能检索，不应把处理未完成解读为“课程里没讲”。现行任务列表最多读取该账号最近 500 行，目录工具不等于无限历史任务接口；脚本类型没有视频入库 job。
+
+问答的 `INSUFFICIENT_EVIDENCE` 要按原结果转述，不能由接入端补造知识。引用包含来源、segment、时间与 quote；现有引用匹配不保证每条 claim 的语义正确性，也没有多轮历史字段。
+
+## 体验与验收步骤
+
+1. 登录上游账号，在 Web 上传真实视频并等知识 READY；账号与适配器配置保持同一主体。
+2. 客户端执行 initialize、notifications/initialized、tools/list，确认五个工具。
+3. 列空间，指定空间调用目录工具，确认目录归属与任务状态。
+4. 同一视频添加第二个目录引用；分别按目录搜索，两处均可见，全空间搜索不重复片段。
+5. 对已知真实课程问题在同一显式范围调用 search 与 ask，检查原始证据、引用与时间；视频证据按窗口读取。
+6. 域外或证据不足问题应拒答；非法客户端令牌拒绝；访问不属于上游账号的空间拒绝。
+
+现有脚本可回归旧有问答/拒答通路：
+
+```bash
+bash scripts/mcp_sop_check.sh
+```
+
+该脚本当前检查原四工具为最低集合并调用真实模型问答，没有检查新增目录工具与目录过滤；不能仅凭它称五工具完整验收。当前新增能力的隔离 HTTP 证据见 [MCP 架构报告](../eval/reports/mcp-architecture-smoke-20261007.json)，其复现脚本 [mcp_architecture_smoke.py](../eval/mcp_architecture_smoke.py) 需要独立后端 fixture 和匹配的 MCP 测试账号，不能直接在生产库运行。此次合成架构验收没有测试真实模型 ask。
+
+## 故障排查
+
+| 现象 | 检查与动作 |
+| --- | --- |
+| HTTP 401 | 客户端令牌缺失/错误，或未按配置重启适配器 |
+| 上游 40100 | 确认服务账号登录模式；静态会话过期不能自动刷新 |
+| 工具能列空间但搜索为空 | 用目录工具检查 READY、job、显式空间/目录；核对该账号是否真的拥有语料 |
+| search 有结果而 ask 无证据 | 先让两者使用同一显式范围，再检查问答证据规则 |
+| 指定目录失败 | `collectionId` 必须属于给定空间，不能只传目录、不传空间 |
+| 有多个客户端但资料相同 | 当前共享一个上游账号的预期行为；不同 token 没有独立主体映射 |
+| GET /mcp 不工作 | 当前适配器使用 POST JSON-RPC，无 GET SSE 长连接路径 |
+
+发布与认证边界见 [兼容说明](BREAKING-CHANGES.md)，结构见 [当前架构](CURRENT_ARCHITECTURE_ASSESSMENT.md)。

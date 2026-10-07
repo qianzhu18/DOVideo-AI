@@ -15,14 +15,17 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
-/** 受控 Agent 编排器：恢复状态、执行一轮分析、校验证据，再决定结束还是补跑。 */
+/** Controlled agent orchestrator: restore state, run one analysis round, verify evidence, then decide to finish or revise. */
 @Service
 public class AgentLoopService {
 
     private static final Logger log = LoggerFactory.getLogger(AgentLoopService.class);
     private static final int MAX_PLAN_TASKS = 5;
+    /** A normal successful pass needs Planner, Executor, and Critic model calls. */
+    static final int MINIMUM_MODEL_CALLS_PER_SUCCESSFUL_RUN = 3;
 
     private final DeepSeekUtils deepSeekUtils;
     private final LongVideoContextService longVideoContextService;
@@ -42,17 +45,24 @@ public class AgentLoopService {
                             EvidenceVerificationService evidenceVerificationService,
                             TaskEventService taskEventService,
                             @Value("${agent.budget.max-rounds:2}") int maxRounds,
-                            @Value("${agent.budget.max-duration-ms:120000}") long maxDurationMs,
+                            @Value("${agent.budget.max-duration-ms:900000}") long maxDurationMs,
                             @Value("${agent.budget.max-estimated-tokens:50000}") long maxEstimatedTokens,
-                            @Value("${agent.budget.max-estimated-cost:0}") double maxEstimatedCost) {
+                            @Value("${agent.budget.max-estimated-cost:0}") double maxEstimatedCost,
+                            @Value("${ai.deepseek.timeout-seconds:300}") long modelTimeoutSeconds) {
         this.deepSeekUtils = deepSeekUtils;
         this.longVideoContextService = longVideoContextService;
         this.checkpointService = checkpointService;
         this.telemetry = telemetry;
         this.evidenceVerificationService = evidenceVerificationService;
         this.taskEventService = taskEventService;
-        if (maxRounds < 1 || maxDurationMs < 1 || maxEstimatedTokens < 1 || maxEstimatedCost < 0) {
+        if (maxRounds < 1 || maxDurationMs < 1 || maxEstimatedTokens < 1
+                || maxEstimatedCost < 0 || modelTimeoutSeconds < 1) {
             throw new IllegalArgumentException("Agent 终止预算配置无效");
+        }
+        long minimumDurationMs = minimumDurationMs(modelTimeoutSeconds);
+        if (maxDurationMs < minimumDurationMs) {
+            throw new IllegalArgumentException("AGENT_MAX_DURATION_MS 至少应为 "
+                    + minimumDurationMs + "，以容纳 Planner、Executor、Critic 各一次模型调用");
         }
         this.maxRounds = maxRounds;
         this.maxDurationMs = maxDurationMs;
@@ -60,18 +70,25 @@ public class AgentLoopService {
         this.maxEstimatedCost = maxEstimatedCost;
     }
 
+    static long minimumDurationMs(long modelTimeoutSeconds) {
+        return Math.multiplyExact(
+                TimeUnit.SECONDS.toMillis(modelTimeoutSeconds),
+                MINIMUM_MODEL_CALLS_PER_SUCCESSFUL_RUN);
+    }
+
     public AgentState run(VideoContext context) {
         return run(null, context, null);
     }
 
-    /** 兼容旧调用方:无模式 = GENERAL(空指令 Profile)。 */
+    /** Legacy callers: no mode means GENERAL (an empty mode profile). */
     public AgentState run(Long mediaId, VideoContext context) {
         return run(mediaId, context, null);
     }
 
     /**
-     * 执行一轮受控 Agent 分析。{@code profile} 为空时等价于 GENERAL——三段模式指令均为空串,
-     * 拼接后 prompt 与引入模式体系前完全一致,因此默认行为不变。
+     * Runs one controlled agent analysis round. A {@code null} {@code profile} is equivalent
+     * to GENERAL — all three mode instructions are empty strings, so the assembled prompt is
+     * byte-identical to the pre-mode behavior and the default stays unchanged.
      */
     public AgentState run(Long mediaId, VideoContext context, ModeProfile profile) {
         validateContext(context);
@@ -131,7 +148,8 @@ public class AgentLoopService {
             plan = revisePlanForRetry(mediaId, relevantContext, plan, state.critique(), profile);
         }
 
-        // Executor 草稿已经落盘时，MQ 重试直接从 Critic 接着走，避免重复生成整份产物。
+        // When an executor draft is already checkpointed, an MQ retry resumes straight from
+        // the critic instead of regenerating the whole deliverable.
         if (state.result() != null && state.critique() == null && state.round() > 0) {
             telemetry.incrementCurrent("criticCheckpointResumes", 1);
             checkBudget(runStartedNanos, "Executor Checkpoint");
@@ -507,7 +525,8 @@ public class AgentLoopService {
         return values == null ? List.of() : values;
     }
 
-    // profile 为空(GENERAL)时返回空指令/GENERAL 模式,使 prompt 与 checkpoint 键都与引入模式前一致。
+    // A null profile maps to empty instructions / GENERAL so prompts and checkpoint keys
+    // stay identical to the pre-mode behavior.
     private static AnalysisMode modeOf(ModeProfile profile) {
         return profile == null ? AnalysisMode.GENERAL : profile.mode();
     }

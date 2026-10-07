@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
+import java.nio.file.Path;
 
 @Service
 public class MediaIngestService {
@@ -33,6 +34,18 @@ public class MediaIngestService {
         String filename = mediaService.normalizeVideoFilename(file.getOriginalFilename());
         String md5 = mediaService.calculateMd5(file);
         String fileUrl = minioUtils.uploadFile(file);
+        return mediaService.saveUploadedMedia(filename, fileUrl, userId, md5);
+    }
+
+    /** Imports a file acquired by a trusted server-side downloader such as Muku. */
+    public MediaFile ingestDownloadedFile(Path path, String originalFilename, Long userId) throws Exception {
+        if (path == null || !path.toFile().isFile()) {
+            throw new IllegalArgumentException("下载后的视频文件不存在");
+        }
+        File file = path.toFile();
+        String filename = mediaService.normalizeVideoFilename(originalFilename);
+        String md5 = mediaService.calculateMd5(file);
+        String fileUrl = minioUtils.uploadLocalFile(file, filename);
         return mediaService.saveUploadedMedia(filename, fileUrl, userId, md5);
     }
 

@@ -80,5 +80,45 @@ done
 
 docker compose --env-file .env ps
 echo
-echo "Infrastructure is ready. Start the backend with:"
-echo "  set -a; source .env; set +a; cd server && ./mvnw spring-boot:run"
+
+# ---- 应用层：后端 → 前端 → (可选) MCP 适配器，一键全起 ----
+export JAVA_HOME="${JAVA_HOME:-$(/usr/libexec/java_home -v 21 2>/dev/null || echo /opt/homebrew/Cellar/openjdk@21/21.0.12/libexec/openjdk.jdk/Contents/Home)}"
+
+wait_http() { # $1=url $2=label
+  for _ in $(seq 1 40); do
+    sleep 3
+    if curl -sf -m 3 -o /dev/null "$1"; then echo "✓ $2 就绪: $1"; return 0; fi
+  done
+  echo "✗ $2 启动超时: $1（看 /tmp/dovideo-*.log）" >&2; return 1
+}
+
+echo "==> 后端 (9090)"
+(cd server && nohup ./mvnw -s .mvn/central-settings.xml spring-boot:run > /tmp/dovideo-backend.log 2>&1 &)
+wait_http http://127.0.0.1:9090/health "后端"
+
+echo "==> 前端 (5173)"
+(cd client && nohup npm run dev > /tmp/dovideo-frontend.log 2>&1 &)
+wait_http http://127.0.0.1:5173/ "前端"
+
+if [[ -n "${MCP_CLIENT_TOKENS:-}" ]]; then
+  echo "==> MCP 适配器 (9091)"
+  # SERVER_PORT/SERVER_ADDRESS from .env target the backend; Spring's relaxed binding
+  # would hijack the adapter onto 9090, so scrub them in this subshell.
+  (cd mcp-server && unset SERVER_PORT SERVER_ADDRESS && MCP_SERVER_PORT=9091 \
+    MCP_CLIENT_TOKENS="$MCP_CLIENT_TOKENS" \
+    DOVIDEO_API_BASE="${DOVIDEO_API_BASE:-http://127.0.0.1:9090}" \
+    DOVIDEO_API_TOKEN="${DOVIDEO_API_TOKEN:-}" \
+    DOVIDEO_API_USERNAME="${DOVIDEO_API_USERNAME:-}" \
+    DOVIDEO_API_PASSWORD="${DOVIDEO_API_PASSWORD:-}" \
+    nohup ./mvnw -q -s .mvn/central-settings.xml spring-boot:run > /tmp/dovideo-mcp.log 2>&1 &)
+  for _ in $(seq 1 40); do
+    sleep 3
+    code="$(curl -s -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:9091/mcp || true)"
+    if [[ "$code" != "000" ]]; then echo "✓ MCP 适配器就绪 (GET /mcp → HTTP $code，POST 端点正常)"; break; fi
+  done
+else
+  echo "==> MCP 适配器跳过（.env 未设置 MCP_CLIENT_TOKENS，见 .env.example）"
+fi
+
+echo
+echo "全部就绪：前端 http://127.0.0.1:5173 · 后端 http://127.0.0.1:9090/health · 日志 /tmp/dovideo-*.log"

@@ -16,7 +16,7 @@ public class WebConfig implements WebMvcConfigurer {
 
     public WebConfig(
             AuthInterceptor authInterceptor,
-            @Value("${app.cors.allowed-origins:http://localhost:5173,http://127.0.0.1:5173}")
+            @Value("${app.cors.allowed-origins:http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174}")
             String allowedOrigins) {
         this.authInterceptor = authInterceptor;
         this.allowedOrigins = Arrays.stream(allowedOrigins.split(","))
@@ -29,7 +29,7 @@ public class WebConfig implements WebMvcConfigurer {
     public void addCorsMappings(CorsRegistry registry) {
         registry.addMapping("/**")
                 .allowedOrigins(allowedOrigins)
-                .allowedMethods("GET", "POST", "DELETE", "OPTIONS")
+                .allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
                 .allowedHeaders("*")
                 .allowCredentials(true)
                 .maxAge(3600);
@@ -38,6 +38,6 @@ public class WebConfig implements WebMvcConfigurer {
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(authInterceptor)
-                .addPathPatterns("/media/**", "/analysis/**", "/admin/**", "/user/logout");
+                .addPathPatterns("/media/**", "/analysis/**", "/admin/**", "/knowledge/**", "/user/logout", "/actuator/metrics/**", "/actuator/prometheus");
     }
 }

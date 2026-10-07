@@ -8,6 +8,7 @@ import com.example.server.dto.TaskStatus;
 import com.example.server.dto.TaskStage;
 import com.example.server.entity.MediaFile;
 import com.example.server.exception.BusinessException;
+import com.example.server.service.task.AnalysisTaskService;
 import com.example.server.utils.AnalysisTaskKeys;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.redisson.api.RRateLimiter;
@@ -28,6 +29,11 @@ public class AnalysisDispatchService {
     private static final Logger log = LoggerFactory.getLogger(AnalysisDispatchService.class);
     private static final int USER_REQUESTS_PER_MINUTE = 5;
     private static final int GLOBAL_REQUESTS_PER_MINUTE = 30;
+    /** Batch entries (multi-upload, catch-up) share a wider budget: consumer
+     *  concurrency is the real throttle for bulk work, and the interactive
+     *  per-minute budget must stay reserved for humans. */
+    private static final int USER_BULK_PER_MINUTE = 60;
+    private static final int GLOBAL_BULK_PER_MINUTE = 120;
     private static final Duration ACTIVE_TTL = Duration.ofHours(6);
 
     private final AiService aiService;
@@ -36,6 +42,7 @@ public class AnalysisDispatchService {
     private final RocketMQTemplate rocketMQTemplate;
     private final RedissonClient redissonClient;
     private final TaskEventService taskEventService;
+    private final AnalysisTaskService taskLedger;
     private final String analysisTopic;
 
     public AnalysisDispatchService(AiService aiService,
@@ -44,6 +51,7 @@ public class AnalysisDispatchService {
                                    RocketMQTemplate rocketMQTemplate,
                                    RedissonClient redissonClient,
                                    TaskEventService taskEventService,
+                                   AnalysisTaskService taskLedger,
                                    @Value("${rocketmq.topic.video-analysis:video-analysis-topic}")
                                    String analysisTopic) {
         this.aiService = aiService;
@@ -52,6 +60,7 @@ public class AnalysisDispatchService {
         this.rocketMQTemplate = rocketMQTemplate;
         this.redissonClient = redissonClient;
         this.taskEventService = taskEventService;
+        this.taskLedger = taskLedger;
         this.analysisTopic = analysisTopic;
     }
 
@@ -60,7 +69,19 @@ public class AnalysisDispatchService {
         return submit(mediaFile, goal, revision, AnalysisMode.GENERAL);
     }
 
+    /** Batch-entry dispatch (multi-upload, ingest scans, space catch-up): same
+     *  pipeline, wider limiter — consumer concurrency (4) is the real throttle for
+     *  bulk work, and the interactive 5/min budget stays reserved for humans. */
+    public SubmissionResult submitBulk(MediaFile mediaFile, String goal, AnalysisMode mode) {
+        return submit(mediaFile, goal, null, mode, true);
+    }
+
     public SubmissionResult submit(MediaFile mediaFile, String goal, AgentFeedback revision, AnalysisMode mode) {
+        return submit(mediaFile, goal, revision, mode, false);
+    }
+
+    private SubmissionResult submit(MediaFile mediaFile, String goal, AgentFeedback revision,
+                                    AnalysisMode mode, boolean bulk) {
         AnalysisMode resolvedMode = mode == null ? AnalysisMode.GENERAL : mode;
         Long mediaId = mediaFile.getId();
         String action = revision == null
@@ -74,7 +95,7 @@ public class AnalysisDispatchService {
         if (!Boolean.TRUE.equals(accepted)) return SubmissionResult.DUPLICATE;
 
         try {
-            if (!tryAcquireQuota(mediaFile.getUserId())) {
+            if (!tryAcquireQuota(mediaFile.getUserId(), bulk)) {
                 redisTemplate.delete(activeKey);
                 return SubmissionResult.RATE_LIMITED;
             }
@@ -98,6 +119,10 @@ public class AnalysisDispatchService {
             log.warn("analysis_queued_event_failed mediaId={} userId={}",
                     mediaId, mediaFile.getUserId(), eventError);
         }
+        // Ledger write happens after the broker accepted the message: only an
+        // accepted task is worth recording (including the revision reopen
+        // COMPLETED -> QUEUED).
+        taskLedger.onSubmitted(mediaId, mediaFile.getUserId(), contentHash, goal, resolvedMode);
         return SubmissionResult.ACCEPTED;
     }
 
@@ -128,13 +153,20 @@ public class AnalysisDispatchService {
     }
 
     private boolean tryAcquireQuota(Long userId) {
-        RRateLimiter userLimiter = redissonClient.getRateLimiter("limit:ai:user:" + userId);
-        userLimiter.trySetRate(RateType.OVERALL, USER_REQUESTS_PER_MINUTE, 1, RateIntervalUnit.MINUTES);
+        return tryAcquireQuota(userId, false);
+    }
+
+    private boolean tryAcquireQuota(Long userId, boolean bulk) {
+        String scope = bulk ? "bulk" : "user";
+        int perMinute = bulk ? USER_BULK_PER_MINUTE : USER_REQUESTS_PER_MINUTE;
+        RRateLimiter userLimiter = redissonClient.getRateLimiter("limit:ai:" + scope + ":" + userId);
+        userLimiter.trySetRate(RateType.OVERALL, perMinute, 1, RateIntervalUnit.MINUTES);
         if (!userLimiter.tryAcquire()) return false;
 
-        RRateLimiter globalLimiter = redissonClient.getRateLimiter("limit:ai:global");
+        RRateLimiter globalLimiter = redissonClient.getRateLimiter("limit:ai:" + scope + ":global");
         globalLimiter.trySetRate(
-                RateType.OVERALL, GLOBAL_REQUESTS_PER_MINUTE, 1, RateIntervalUnit.MINUTES);
+                RateType.OVERALL, bulk ? GLOBAL_BULK_PER_MINUTE : GLOBAL_REQUESTS_PER_MINUTE,
+                1, RateIntervalUnit.MINUTES);
         return globalLimiter.tryAcquire();
     }
 

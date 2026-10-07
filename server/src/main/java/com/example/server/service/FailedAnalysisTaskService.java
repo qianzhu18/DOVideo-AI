@@ -7,6 +7,7 @@ import com.example.server.dto.TaskStatus;
 import com.example.server.dto.TaskStage;
 import com.example.server.entity.FailedAnalysisTask;
 import com.example.server.mapper.FailedAnalysisTaskMapper;
+import com.example.server.service.task.AnalysisTaskService;
 import com.example.server.utils.AnalysisTaskKeys;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.slf4j.Logger;
@@ -41,18 +42,21 @@ public class FailedAnalysisTaskService {
     private final RocketMQTemplate rocketMQTemplate;
     private final StringRedisTemplate redisTemplate;
     private final TaskEventService taskEventService;
+    private final AnalysisTaskService taskLedger;
     private final String analysisTopic;
 
     public FailedAnalysisTaskService(FailedAnalysisTaskMapper taskMapper,
                                      RocketMQTemplate rocketMQTemplate,
                                      StringRedisTemplate redisTemplate,
                                      TaskEventService taskEventService,
+                                     AnalysisTaskService taskLedger,
                                      @Value("${rocketmq.topic.video-analysis:video-analysis-topic}")
                                      String analysisTopic) {
         this.taskMapper = taskMapper;
         this.rocketMQTemplate = rocketMQTemplate;
         this.redisTemplate = redisTemplate;
         this.taskEventService = taskEventService;
+        this.taskLedger = taskLedger;
         this.analysisTopic = analysisTopic;
     }
 
@@ -113,7 +117,16 @@ public class FailedAnalysisTaskService {
         String activeKey = AnalysisTaskKeys.active(taskScope, goalDigest);
         Boolean accepted = redisTemplate.opsForValue().setIfAbsent(
                 activeKey, String.valueOf(task.getMediaId()), ACTIVE_TTL);
-        if (!Boolean.TRUE.equals(accepted)) throw new IllegalArgumentException("相同任务正在处理中");
+        if (!Boolean.TRUE.equals(accepted)) {
+            // 幂等键是尽力而为的状态：进程死亡会把它残留最多 6 小时。台账才是“任务真的
+            // 在跑”的权威——没有进行中的台账记录时清掉陈旧键再试一次，别把重放锁死在幽灵上。
+            if (taskLedger.hasActiveTask(task.getMediaId())
+                    || !Boolean.TRUE.equals(redisTemplate.delete(activeKey))
+                    || !Boolean.TRUE.equals(redisTemplate.opsForValue().setIfAbsent(
+                            activeKey, String.valueOf(task.getMediaId()), ACTIVE_TTL))) {
+                throw new IllegalArgumentException("相同任务正在处理中");
+            }
+        }
 
         boolean dispatched = false;
         try {
@@ -126,6 +139,10 @@ public class FailedAnalysisTaskService {
             if (taskMapper.updateById(task) != 1) {
                 throw new IllegalStateException("失败任务重放台账更新失败");
             }
+            // The ledger transition FAILED->QUEUED happens after the replay
+            // succeeded; the ledger is fault-tolerant by design and can never
+            // fail the replay itself.
+            taskLedger.onRequeued(task.getMediaId(), contentHash, task.getUserGoal(), mode);
         } catch (RuntimeException e) {
             if (!dispatched) {
                 redisTemplate.delete(activeKey);
