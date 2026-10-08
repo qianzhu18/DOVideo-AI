@@ -21,6 +21,7 @@ public class KnowledgeScopeResolver {
     }
 
     public KnowledgeQueryScope resolve(Long userId, Long spaceId, Long collectionId) {
+        spaceId = effectiveSpace(userId, spaceId, collectionId);
         spaces.requireOwnedSpace(userId, spaceId);
         var query = new QueryWrapper<KnowledgePlacement>().eq("space_id", spaceId);
         if (collectionId != null) {
@@ -45,5 +46,14 @@ public class KnowledgeScopeResolver {
             }
         }
         return new KnowledgeQueryScope(userId, java.util.Map.copyOf(generations));
+    }
+
+    public Long effectiveSpace(Long userId, Long spaceId, Long collectionId) {
+        if (spaceId == null && collectionId != null)
+            throw new com.example.server.exception.BusinessException(com.example.server.common.ErrorCode.INVALID_ARGUMENT,
+                    "目录查询必须显式提供知识空间");
+        Long effective = spaceId == null ? spaces.defaultSpaceForUser(userId).getId() : spaceId;
+        spaces.requireOwnedSpace(userId, effective);
+        return effective;
     }
 }

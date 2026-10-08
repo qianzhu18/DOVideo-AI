@@ -19,6 +19,8 @@ import java.util.List;
 public class KnowledgeSearchController {
 
     private final KnowledgeSearchService searchService;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.example.server.service.KnowledgeQueryStateService queryStates;
 
     public KnowledgeSearchController(KnowledgeSearchService searchService) {
         this.searchService = searchService;
@@ -30,5 +32,16 @@ public class KnowledgeSearchController {
             @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId,
             @Valid @RequestBody KnowledgeSearchRequest request) {
         return Result.ok(searchService.search(userId, request));
+    }
+
+    /** Additive contract: legacy /search remains an array for older clients. */
+    @PostMapping("/search/details")
+    public Result<java.util.Map<String, Object>> details(
+            @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId,
+            @Valid @RequestBody KnowledgeSearchRequest request) {
+        var state = queryStates.describe(userId, request.spaceId(), request.collectionId());
+        var hits = searchService.search(userId, request);
+        return Result.ok(java.util.Map.of("scope", state, "hits", hits,
+                "warnings", state.warning().isEmpty() ? List.of() : List.of(state.warning())));
     }
 }

@@ -30,8 +30,6 @@ public class DovideoApiClient implements ToolBackend {
     /** LLM context hygiene: cap each text field so one huge transcript cannot flood the assistant. */
     private static final int MAX_TEXT_FIELD_CHARS = 2000;
     private static final int MAX_EVIDENCE_ROWS = 50;
-    /** Fan-out cap when a search omits spaceId ("all my spaces" semantics). */
-    private static final int MAX_SPACES_PER_SEARCH = 10;
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
@@ -60,81 +58,36 @@ public class DovideoApiClient implements ToolBackend {
     @Override
     public String searchKnowledge(String query, Long spaceId, Long collectionId, Integer topK, String strategy) throws Exception {
         if (collectionId != null && spaceId == null) throw new IllegalArgumentException("collectionId requires spaceId");
-        JsonNode spaces = call("GET", "/knowledge/spaces", null, true);
-        JsonNode spaceArray = spaces.isArray() ? spaces : mapper.createArrayNode();
-        if (spaceArray.isEmpty()) return "[]";
-
-        // A missing spaceId means "all my spaces": assistants rarely know the space
-        // model, and searching only the (possibly empty) default space would look
-        // like a broken retrieval to the user. Cap the fan-out for local accounts.
-        int effectiveTopK = topK != null ? topK : 5;
-        ArrayNode merged = mapper.createArrayNode();
-        int scanned = 0;
-        for (JsonNode space : spaceArray) {
-            if (spaceId == null && scanned++ >= MAX_SPACES_PER_SEARCH) break;
-            long candidateSpace = space.path("id").asLong();
-            if (spaceId != null && candidateSpace != spaceId) continue;
-            ObjectNode request = mapper.createObjectNode();
-            request.put("query", query);
-            request.put("spaceId", candidateSpace);
-            if (collectionId != null) request.put("collectionId", collectionId);
-            request.put("topK", effectiveTopK);
-            if (strategy != null && !strategy.isBlank()) request.put("strategy", strategy);
-            JsonNode data = call("POST", "/knowledge/search", request.toString(), true);
-            for (JsonNode hit : data.isArray() ? data : mapper.createArrayNode()) {
-                ObjectNode item = merged.addObject();
-                item.put("segmentId", hit.path("segmentId").asText());
-                item.put("spaceId", candidateSpace);
-                item.put("spaceName", space.path("name").asText());
-                item.put("title", hit.path("title").asText());
-                item.put("sourceType", hit.path("sourceType").asText("VIDEO"));
-                item.put("sourceId", hit.path("sourceId").asLong());
-                // SCRIPT hits carry no media; pass null through instead of coercing to 0,
-                // which would send get_video_evidence after a nonexistent media id.
-                if (hit.path("mediaId").isMissingNode() || hit.path("mediaId").isNull()) {
-                    item.putNull("mediaId");
-                } else {
-                    item.put("mediaId", hit.path("mediaId").asLong());
-                }
-                item.put("startMs", hit.path("startMs").asLong());
-                item.put("endMs", hit.path("endMs").asLong());
-                item.put("startSec", hit.path("startMs").asLong() / 1000);
-                item.put("endSec", hit.path("endMs").asLong() / 1000);
-                item.put("matchType", hit.path("matchType").asText());
-                item.put("score", hit.path("score").asDouble());
-                String excerpt = firstNonBlank(hit.path("transcript"), hit.path("ocrText"), hit.path("summary"));
-                if (excerpt != null) item.put("excerpt", trim(excerpt, 400));
-            }
+        ObjectNode request = mapper.createObjectNode();
+        request.put("query", query);
+        if (spaceId != null) request.put("spaceId", spaceId);
+        if (collectionId != null) request.put("collectionId", collectionId);
+        if (topK != null) request.put("topK", topK);
+        if (strategy != null && !strategy.isBlank()) request.put("strategy", strategy);
+        JsonNode data = call("POST", "/knowledge/search/details", request.toString(), true);
+        ObjectNode result = mapper.createObjectNode();
+        result.set("scope", data.path("scope"));
+        result.set("warnings", data.path("warnings"));
+        ArrayNode hits = result.putArray("hits");
+        for (JsonNode hit : data.path("hits")) {
+            ObjectNode item = hit.deepCopy();
+            item.put("startSec", hit.path("startMs").asLong() / 1000);
+            item.put("endSec", hit.path("endMs").asLong() / 1000);
+            putTrimmed(item, "transcript", hit.path("transcript"));
+            putTrimmed(item, "ocrText", hit.path("ocrText"));
+            putTrimmed(item, "summary", hit.path("summary"));
+            hits.add(item);
         }
-        // The same content may be referenced in several spaces; expose each evidence segment once.
-        var unique = new java.util.LinkedHashMap<String, JsonNode>();
-        merged.forEach(hit -> unique.merge(hit.path("segmentId").asText(), hit,
-                (a, b) -> a.path("score").asDouble() >= b.path("score").asDouble() ? a : b));
-        ArrayNode result = mapper.createArrayNode();
-        unique.values().stream().sorted(java.util.Comparator.comparingDouble(
-                (JsonNode hit) -> hit.path("score").asDouble()).reversed())
-                .limit(Math.max(1, Math.min(20, effectiveTopK))).forEach(result::add);
         return result.toString();
     }
 
     @Override
     public String askKnowledge(String query, Long spaceId, Long collectionId, Integer topK, String strategy)
             throws Exception {
-        // Upstream requires a concrete spaceId. Resolve one instead of failing: assistants
-        // rarely know the space model, and asking them to list spaces first wastes a turn.
-        Long effectiveSpace = spaceId;
-        if (effectiveSpace == null) {
-            JsonNode spaces = call("GET", "/knowledge/spaces", null, true);
-            JsonNode spaceArray = spaces.isArray() ? spaces : mapper.createArrayNode();
-            if (spaceArray.isEmpty()) {
-                return emptyAccountRefusal();
-            }
-            JsonNode chosen = pickDefaultSpace(spaceArray);
-            effectiveSpace = chosen.path("id").asLong();
-        }
+        if (collectionId != null && spaceId == null) throw new IllegalArgumentException("collectionId requires spaceId");
         ObjectNode request = mapper.createObjectNode();
         request.put("query", query);
-        request.put("spaceId", effectiveSpace);
+        if (spaceId != null) request.put("spaceId", spaceId);
         if (collectionId != null) request.put("collectionId", collectionId);
         if (topK != null) request.put("topK", topK);
         if (strategy != null && !strategy.isBlank()) request.put("strategy", strategy);
@@ -207,25 +160,6 @@ public class DovideoApiClient implements ToolBackend {
         return sessionToken;
     }
 
-    private JsonNode pickDefaultSpace(JsonNode spaceArray) {
-        JsonNode first = null;
-        for (JsonNode space : spaceArray) {
-            if (first == null) first = space;
-            if (space.path("systemDefault").asBoolean(false)) return space;
-        }
-        return first;
-    }
-
-    /** Mirrors the upstream refusal shape so clients see one contract, not two. */
-    private String emptyAccountRefusal() {
-        ObjectNode out = mapper.createObjectNode();
-        out.put("answerability", "INSUFFICIENT_EVIDENCE");
-        out.put("answer", "当前知识库中没有找到足以支持这个回答的证据。");
-        out.putArray("citations");
-        out.putArray("warnings").add("账号下还没有任何知识空间，请先通过工作台导入视频。");
-        return out.toString();
-    }
-
     /**
      * Narrows the upstream answer to what an assistant needs: the full answer text
      * (it is the payload, never truncated), citations with second-precision aliases,
@@ -235,6 +169,7 @@ public class DovideoApiClient implements ToolBackend {
         ObjectNode out = mapper.createObjectNode();
         out.put("answerability", data.path("answerability").asText("INSUFFICIENT_EVIDENCE"));
         out.put("answer", data.path("answer").asText(""));
+        if (data.has("scope")) out.set("scope", data.get("scope"));
         ArrayNode citations = out.putArray("citations");
         for (JsonNode citation : data.path("citations").isArray()
                 ? data.path("citations") : mapper.createArrayNode()) {

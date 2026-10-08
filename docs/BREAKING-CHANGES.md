@@ -15,7 +15,7 @@
 | 目录组织 | 一份 source 可有多个 placement | 来源响应新增 `placementId`；移动/移除应带当前 placement |
 | 旧 location / attach 接口 | 保留主归属投影语义 | 不把它当“新增第二个引用”；新引用用 placements POST |
 | 索引重建 | 构建新 generation 后发布，失败保留旧 READY | job 失败与旧知识 READY 分开显示；旧 reindex 仍同步 |
-| MCP | 新增目录工具，search 支持 collectionId 与去重 | 五工具发现；目录查询显式传 spaceId；默认 search/ask 范围仍不同 |
+| MCP | 新增目录工具，search 支持 collectionId 与去重 | 五工具发现；目录查询显式传 spaceId；默认 search/ask 均为默认空间 |
 
 新增 HTTP 路径：
 
@@ -49,3 +49,7 @@ Actuator 默认仅 health；`MANAGEMENT_EXPOSURE=health,prometheus,metrics` 显�
 ## 独立评测运行（2026-10-08）
 
 增加 `knowledge.ingest.dispatch-enabled`（默认 true）。独立快照评测设 false，禁止 outbox 调度和失联任务恢复；正常产品保持 true。它不禁止显式 HTTP 写入或消费者收取已有消息，需独立 topic/group 和快照数据。质量基准不改变当前产品查询默认行为。
+
+## 查询范围契约（2026-10-08）
+
+MCP `search_video_knowledge` 从数组改为 `{scope,hits,warnings}`，省略 spaceId 从最多十个空间改为后端默认空间。更新外部客户端读取 hits；需要其他空间时先发现再显式指定。ask 省略范围也由后端解析；collectionId 必须与 spaceId 同传。HTTP 新增 `/knowledge/search/details` 对象契约，旧 `/knowledge/search` 保留数组。ask/stream 增加 scope；未就绪或失败可返回 NOT_READY，客户端应显示处理状态。Web 已更新，当前 MCP 共享主体边界不变。无需数据库迁移。

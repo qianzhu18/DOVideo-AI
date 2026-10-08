@@ -260,7 +260,7 @@
           <section v-if="answerResult" class="answer-results" :class="{ 'is-insufficient': answerResult.answerability !== 'SUPPORTED' }" aria-live="polite">
             <header class="answer-results-head">
               <div class="answer-status">
-                <span class="answer-status-mark">{{ answerResult.answerability === 'SUPPORTED' ? '有证据支持' : '证据不足' }}</span>
+                <span class="answer-status-mark">{{ answerResult.answerability === 'SUPPORTED' ? '有证据支持' : answerResult.answerability === 'NOT_READY' ? '资料未就绪' : '证据不足' }}</span>
                 <span v-if="answerResult.citations?.length">{{ answerResult.citations.length }} 条引用</span>
               </div>
               <button type="button" class="subtle-button" @click="answerResult = null">收起</button>
@@ -294,8 +294,9 @@
               <span>检索结果</span>
               <button type="button" class="subtle-button" @click="closeSearchResults">收起</button>
             </header>
+            <p v-for="warning in searchWarnings" :key="warning" class="search-empty">{{ warning }}</p>
             <!-- 检索是空间级的：空空间里"无证据"是必然结果，必须提示用户切换空间而不是让他误判检索坏了 -->
-            <p v-if="searchResults.length === 0" class="search-empty">
+            <p v-if="searchResults.length === 0 && searchWarnings.length === 0" class="search-empty">
               未检索到支持证据。{{ sources.length === 0 ? '当前空间还没有内容源——请检查左侧是否选错了空间（检索只在所选空间内进行）。' : '换一个更贴近视频原话的问法再试。' }}
             </p>
             <ul v-else class="search-hit-list">
@@ -597,6 +598,8 @@ const searching = ref(false)
 const searched = ref(false)
 const searchResults = ref([])
 const searchError = ref('')
+const searchWarnings = ref([])
+let searchRequestId = 0
 const ingestPath = ref('')
 const ingestBusy = ref(false)
 const ingestPlan = ref(null)
@@ -753,6 +756,8 @@ async function selectCollection(collectionId) {
 }
 
 function clearKnowledgeResponses() {
+  searchRequestId++
+  searching.value = false
   answerRequestId += 1
   activeAskController?.abort()
   activeAskController = null
@@ -763,6 +768,7 @@ function clearKnowledgeResponses() {
   answerError.value = ''
   searchResults.value = []
   searchError.value = ''
+  searchWarnings.value = []
   searched.value = false
 }
 
@@ -1034,27 +1040,33 @@ function applyTagFilter() {
 async function searchKnowledge() {
   const query = searchQuery.value.trim()
   if (!query || !selectedSpaceId.value) return
+  const requestId = ++searchRequestId
+  const scopeSpace = selectedSpaceId.value
+  const scopeFolder = selectedCollectionId.value
   searching.value = true
   searchError.value = ''
+  searchWarnings.value = []
   answerError.value = ''
   answerResult.value = null
   try {
-    const hits = await request('/knowledge/search', {
+    const result = await request('/knowledge/search/details', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        spaceId: selectedSpaceId.value,
-        collectionId: selectedCollectionId.value,
+        spaceId: scopeSpace,
+        collectionId: scopeFolder,
         query,
         topK: 8
       })
     })
-    searchResults.value = hits
+    if (requestId !== searchRequestId) return
+    searchResults.value = result.hits
+    searchWarnings.value = result.warnings || []
     searched.value = true
   } catch (cause) {
-    searchError.value = cause.message || '跨视频检索失败'
+    if (requestId === searchRequestId) searchError.value = cause.message || '跨视频检索失败'
   } finally {
-    searching.value = false
+    if (requestId === searchRequestId) searching.value = false
   }
 }
 
@@ -1067,6 +1079,7 @@ async function askKnowledge() {
   activeAskController = controller
   answerError.value = ''
   searchError.value = ''
+  searchWarnings.value = []
   answerResult.value = null
   answerDraft.value = ''
   answerPhase.value = 'retrieving'

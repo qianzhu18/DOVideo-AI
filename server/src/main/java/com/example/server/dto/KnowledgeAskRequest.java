@@ -8,7 +8,6 @@ import jakarta.validation.constraints.NotNull;
  * collection filters so an answer can never silently cross a user's knowledge boundary.
  */
 public record KnowledgeAskRequest(
-        @NotNull(message = "知识空间不能为空")
         Long spaceId,
         Long collectionId,
         @NotBlank(message = "问题不能为空")

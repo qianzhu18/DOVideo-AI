@@ -34,10 +34,10 @@ def main():
     check('five tools including folder discovery', len(tools) == 5 and any(t['name'] == 'get_knowledge_catalog' for t in tools))
     catalog = tool('get_knowledge_catalog', {'spaceId': scope['spaceId']})
     check('catalog shows folder references and independent job state', len(catalog['collections']) == 3 and catalog['ingestJobs'][0]['state'] == 'READY')
-    hits = tool('search_video_knowledge', {'query': '缓存', 'topK': 5, 'strategy': 'hybrid'})
-    check('all-space retrieval deduplicates shared evidence', len(hits) == 2 and len({h['segmentId'] for h in hits}) == 2)
+    hits = tool('search_video_knowledge', {'query': '缓存', 'topK': 5, 'strategy': 'hybrid'})['hits']
+    check('default-space retrieval deduplicates shared evidence', len(hits) == 2 and len({h['segmentId'] for h in hits}) == 2)
     folder = next(f['id'] for f in catalog['collections'] if f['name'] == '前端学习')
-    check('MCP folder filtering uses backend scope', len(tool('search_video_knowledge', {'query': '缓存', 'spaceId': scope['spaceId'], 'collectionId': folder, 'strategy': 'vector'})) == 2)
+    check('MCP folder filtering uses backend scope', len(tool('search_video_knowledge', {'query': '缓存', 'spaceId': scope['spaceId'], 'collectionId': folder, 'strategy': 'vector'})['hits']) == 2)
     evidence = tool('get_video_evidence', {'mediaId': scope['mediaId'], 'startMs': 0, 'endMs': 60000})
     check('evidence surface returns published segments', bool(evidence))
     try: rpc('tools/list', credential='unauthorized-fixture-client')

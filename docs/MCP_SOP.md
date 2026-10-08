@@ -38,7 +38,9 @@
 | `ask_video_knowledge` | 单轮自然语言回答与引用、证据不足拒答 | `query` 必填；`spaceId`、`collectionId`、`topK≤20`、`strategy` |
 | `get_video_evidence` | 读取视频当前已发布分段 | `mediaId` 必填，`startMs/endMs` 可选；含 transcript/OCR/summary，摘要不是原视频逐字引文 |
 
-`strategy` 为 vector/keyword/hybrid。省略 `spaceId` 时 search 最多扇出十个拥有的空间，结果按 segmentId 去重；ask 使用默认空间。为避免这个尚未统一的默认契约，应先列空间/目录，再给 search 和 ask 传同一显式范围。
+`strategy` 为 vector/keyword/hybrid。省略 `spaceId` 时 search 与 ask 均由后端解析为默认空间；不再扇出全部空间。指定目录必须同时指定空间。网页传当前选中空间；会话范围在会话分支实现绑定。
+
+`search_video_knowledge` 现在返回 `{scope, hits, warnings}`：读取 `hits` 数组；`scope.status` 为 READY、PARTIAL、NOT_READY、FAILED 或 EMPTY。PARTIAL 只搜索已发布内容，NOT_READY/FAILED 提示先处理入库任务，不能说课程不存在。ask 返回相同 `scope`，无就绪来源时不调用生成模型；未就绪/失败对应 `answerability=NOT_READY`。MCP 仍共享一个上游账号，不是社区多主体授权。
 
 目录工具的 source/placement 表示组织关系，job 表示处理状态。还未 READY 不能检索，不应把处理未完成解读为“课程里没讲”。现行任务列表最多读取该账号最近 500 行，目录工具不等于无限历史任务接口；脚本类型没有视频入库 job。
 

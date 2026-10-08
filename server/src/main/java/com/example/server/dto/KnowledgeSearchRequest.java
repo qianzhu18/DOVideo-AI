@@ -12,7 +12,6 @@ import jakarta.validation.constraints.NotNull;
  *                 one switch without changing defaults anywhere else.
  */
 public record KnowledgeSearchRequest(
-        @NotNull(message = "知识空间不能为空")
         Long spaceId,
         Long collectionId,
         @NotBlank(message = "检索问题不能为空")

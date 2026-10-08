@@ -25,6 +25,8 @@ public class KnowledgeAnswerService {
 
     private final KnowledgeSearchService searchService;
     private final KnowledgeAnswerGenerator answerGenerator;
+    @org.springframework.beans.factory.annotation.Autowired
+    private KnowledgeQueryStateService queryStates;
 
     public KnowledgeAnswerService(KnowledgeSearchService searchService,
                                   KnowledgeAnswerGenerator answerGenerator) {
@@ -33,27 +35,43 @@ public class KnowledgeAnswerService {
     }
 
     public KnowledgeAnswer ask(Long userId, KnowledgeAskRequest request) {
+        var state = queryStates == null ? null : queryStates.describe(userId, request.spaceId(), request.collectionId());
+        if (state != null && state.readySources() == 0) return unavailable(state);
         List<KnowledgeSearchHit> hits = searchService.search(userId, request.toSearchRequest());
         if (hits.isEmpty()) {
-            return insufficient(NO_EVIDENCE_MESSAGE, List.of("未检索到候选证据，未调用生成模型。"));
+            return withScope(insufficient(NO_EVIDENCE_MESSAGE, List.of("未检索到候选证据，未调用生成模型。")), state);
         }
 
         KnowledgeAnswerDraft draft = answerGenerator.generate(request.query().trim(), hits);
-        return validateDraft(draft, hits);
+        return withScope(validateDraft(draft, hits), state);
     }
 
     public KnowledgeAnswer askStreaming(Long userId, KnowledgeAskRequest request,
                                         Consumer<String> phase, Consumer<String> answerDelta) {
         phase.accept("retrieving");
+        var state = queryStates == null ? null : queryStates.describe(userId, request.spaceId(), request.collectionId());
+        if (state != null && state.readySources() == 0) return unavailable(state);
         List<KnowledgeSearchHit> hits = searchService.search(userId, request.toSearchRequest());
         if (hits.isEmpty()) {
             phase.accept("verifying");
-            return insufficient(NO_EVIDENCE_MESSAGE, List.of("未检索到候选证据，未调用生成模型。"));
+            return withScope(insufficient(NO_EVIDENCE_MESSAGE, List.of("未检索到候选证据，未调用生成模型。")), state);
         }
         phase.accept("generating");
         KnowledgeAnswerDraft draft = answerGenerator.generateStreaming(request.query().trim(), hits, answerDelta);
         phase.accept("verifying");
-        return validateDraft(draft, hits);
+        return withScope(validateDraft(draft, hits), state);
+    }
+
+    private KnowledgeAnswer unavailable(com.example.server.dto.KnowledgeQueryState state) {
+        String status = "NOT_READY".equals(state.status()) || "FAILED".equals(state.status())
+                ? KnowledgeAnswer.NOT_READY : KnowledgeAnswer.INSUFFICIENT_EVIDENCE;
+        return new KnowledgeAnswer(status, state.warning(), List.of(), List.of(state.warning()), state);
+    }
+
+    private KnowledgeAnswer withScope(KnowledgeAnswer answer, com.example.server.dto.KnowledgeQueryState state) {
+        var warnings = new ArrayList<>(answer.warnings());
+        if (state != null && !state.warning().isEmpty()) warnings.add(state.warning());
+        return new KnowledgeAnswer(answer.answerability(), answer.answer(), answer.citations(), warnings, state);
     }
 
     private KnowledgeAnswer validateDraft(KnowledgeAnswerDraft draft, List<KnowledgeSearchHit> hits) {
