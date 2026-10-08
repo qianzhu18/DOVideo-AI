@@ -8,7 +8,7 @@
 - The current GitHub archived/read-only flag is repository metadata, not the user's desired project outcome. The Java migration target location must follow the user's explicit direction; when not specified, ask whether the port belongs in `DOVideo-AI` or in the `VideoKB` repository itself.
 - Python files may remain only as evaluation/data assets during migration. Port product capabilities to Java rather than extending the Python implementation.
 - When a README, TODO, or report claims a capability is complete, verify it in source code and distinguish code presence from tests, real-data evaluation, and end-to-end acceptance.
-- Treat Qdrant as the current vector store. Milvus is only a candidate until dual-write, backfill, shadow-query, and benchmark gates are met.
+- Treat Qdrant as the current transitional vector store. The user selected Milvus as the preferred future stack on 2026-10-09; prioritize Milvus for new vector-backend design and experiments. Cutover still requires dual-write, backfill, shadow-query, authorization, recovery, and benchmark gates; do not describe a planned migration as implemented.
 
 ## Knowledge-base acceptance
 

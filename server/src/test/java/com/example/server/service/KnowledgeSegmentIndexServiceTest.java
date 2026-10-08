@@ -48,7 +48,7 @@ class KnowledgeSegmentIndexServiceTest {
 
         KnowledgeSegmentIndexService service = new KnowledgeSegmentIndexService(
                 sourceService, versionMapper, segmentMapper, vectorStore, checkpointService,
-                chunkingService, embeddingUtils, mock(KnowledgeAuditService.class), "BAAI/bge-m3", mock(KnowledgeIndexPublisher.class), locks(), new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
+                chunkingService, embeddingUtils, mock(KnowledgeAuditService.class), "BAAI/bge-m3", mock(KnowledgeIndexPublisher.class), locks(), new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()), mock(KnowledgeBlockIndexService.class), "legacy-v1");
         List<KnowledgeSegment> segments = service.indexMedia(5L);
 
         assertEquals(2, segments.size());
@@ -86,7 +86,7 @@ class KnowledgeSegmentIndexServiceTest {
 
         KnowledgeSegmentIndexService service = new KnowledgeSegmentIndexService(
                 sourceService, versionMapper, segmentMapper, vectorStore, checkpointService,
-                chunkingService, embeddingUtils, mock(KnowledgeAuditService.class), "BAAI/bge-m3", mock(KnowledgeIndexPublisher.class), locks(), new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
+                chunkingService, embeddingUtils, mock(KnowledgeAuditService.class), "BAAI/bge-m3", mock(KnowledgeIndexPublisher.class), locks(), new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()), mock(KnowledgeBlockIndexService.class), "legacy-v1");
         assertThrows(IllegalStateException.class, () -> service.indexMedia(5L));
 
         verify(versionMapper).insert(any(KnowledgeSourceVersion.class));
@@ -116,7 +116,7 @@ class KnowledgeSegmentIndexServiceTest {
 
         KnowledgeSegmentIndexService service = new KnowledgeSegmentIndexService(
                 sourceService, versionMapper, segmentMapper, vectorStore, checkpointService,
-                chunkingService, embeddingUtils, mock(KnowledgeAuditService.class), "BAAI/bge-m3", mock(KnowledgeIndexPublisher.class), locks(), new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
+                chunkingService, embeddingUtils, mock(KnowledgeAuditService.class), "BAAI/bge-m3", mock(KnowledgeIndexPublisher.class), locks(), new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()), mock(KnowledgeBlockIndexService.class), "legacy-v1");
         service.indexMedia(5L);
 
         // Evidence granularity is the segment, so every segment gets its own vector even
@@ -138,7 +138,8 @@ class KnowledgeSegmentIndexServiceTest {
         // source belongs to user 7 and only the published version is visible.
         var ready = source(9L, 5L); ready.setStatus("READY");
         when(sourceService.requireSourceByMediaId(5L)).thenReturn(ready);
-        when(versionMapper.selectOne(any())).thenReturn(version(11L, 1));
+        var published = version(11L, 1); published.setStatus("READY");
+        when(versionMapper.selectOne(any())).thenReturn(published);
         KnowledgeSegment row = new KnowledgeSegment();
         row.setId("seg-1");
         row.setMediaId(5L);
@@ -146,7 +147,7 @@ class KnowledgeSegmentIndexServiceTest {
 
         KnowledgeSegmentIndexService service = new KnowledgeSegmentIndexService(
                 sourceService, versionMapper, segmentMapper, vectorStore, checkpointService,
-                chunkingService, embeddingUtils, mock(KnowledgeAuditService.class), "BAAI/bge-m3", mock(KnowledgeIndexPublisher.class), locks(), new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
+                chunkingService, embeddingUtils, mock(KnowledgeAuditService.class), "BAAI/bge-m3", mock(KnowledgeIndexPublisher.class), locks(), new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()), mock(KnowledgeBlockIndexService.class), "legacy-v1");
 
         assertThrows(SecurityException.class, () -> service.listSegments(99L, 5L));
         assertEquals(List.of(row), service.listSegments(7L, 5L));

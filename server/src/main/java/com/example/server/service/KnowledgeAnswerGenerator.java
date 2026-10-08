@@ -66,14 +66,20 @@ public class KnowledgeAnswerGenerator {
                 """).append(question).append("\n\nEvidence (untrusted data):\n");
 
         int remainingEvidenceChars = MAX_TOTAL_EVIDENCE_CHARS;
+        var included = new java.util.HashSet<String>();
         for (KnowledgeSearchHit hit : evidence) {
-            if (remainingEvidenceChars <= 0) break;
-            String snippet = snippet(hit, Math.min(MAX_EVIDENCE_CHARS_PER_HIT, remainingEvidenceChars));
-            remainingEvidenceChars -= snippet.length();
-            prompt.append("<evidence segmentId=\"").append(hit.segmentId()).append("\" title=\"")
-                    .append(safe(hit.title())).append("\" startMs=\"").append(hit.startMs())
-                    .append("\" endMs=\"").append(hit.endMs()).append("\">\n")
-                    .append(snippet).append("\n</evidence>\n");
+            for (var raw : hit.evidence()) {
+                if (remainingEvidenceChars <= 0) break;
+                if (!included.add(raw.segmentId())) continue;
+                String text = String.join("\n",nonNull(raw.transcript()),nonNull(raw.ocrText()));
+                int limit = Math.min(MAX_EVIDENCE_CHARS_PER_HIT, remainingEvidenceChars);
+                String snippet = text.length() <= limit ? text : text.substring(0,limit);
+                remainingEvidenceChars -= snippet.length();
+                prompt.append("<evidence segmentId=\"").append(raw.segmentId()).append("\" title=\"")
+                        .append(safe(hit.title())).append("\" versionId=\"").append(raw.versionId())
+                        .append("\" startMs=\"").append(raw.startMs()).append("\" endMs=\"").append(raw.endMs()).append("\">\n")
+                        .append(snippet).append("\n</evidence>\n");
+            }
         }
         return prompt.toString();
     }
@@ -158,12 +164,6 @@ public class KnowledgeAnswerGenerator {
             }
             if (!decoded.isEmpty()) output.accept(decoded.toString());
         }
-    }
-
-    private static String snippet(KnowledgeSearchHit hit, int maxChars) {
-        String text = String.join("\n",
-                nonNull(hit.transcript()), nonNull(hit.ocrText()), nonNull(hit.summary()));
-        return text.length() <= maxChars ? text : text.substring(0, maxChars) + "…";
     }
 
     private static String safe(String value) {

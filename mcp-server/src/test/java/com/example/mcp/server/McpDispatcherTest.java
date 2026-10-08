@@ -20,6 +20,9 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Protocol contract of the hand-written MCP dispatcher: version negotiation, tool
@@ -169,5 +172,35 @@ class McpDispatcherTest {
     private JsonNode call(String body) throws Exception {
         McpDispatcher.Outcome outcome = dispatcher.handle(body, "test");
         return mapper.readTree(outcome.body());
+    }
+
+    @Test
+    void historicalEvidenceForwardsExactVersionAndTimes() throws Exception {
+        when(backend.videoEvidence(5L, 60000L, 120000L, 11L)).thenReturn("[{\"versionId\":11}]");
+        var result = call("""
+                {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_video_evidence",
+                "arguments":{"mediaId":5,"startMs":60000,"endMs":120000,"versionId":11}}}
+                """).path("result");
+        assertFalse(result.path("isError").asBoolean());
+        assertTrue(result.path("content").get(0).path("text").asText().contains("11"));
+        verify(backend).videoEvidence(5L, 60000L, 120000L, 11L);
+    }
+
+    @Test
+    void fractionalOrNonpositiveVersionCannotSelectAnotherEvidenceVersion() throws Exception {
+        for (String version : new String[]{"11.9", "0", "-1", "\"11\""}) {
+            var response = call("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+                    + "\"params\":{\"name\":\"get_video_evidence\",\"arguments\":{\"mediaId\":5,\"versionId\":"+version+"}}}");
+            assertEquals(-32602, response.path("error").path("code").asInt());
+        }
+        verifyNoInteractions(backend);
+    }
+
+    @Test
+    void legacyBackendRejectsHistoricalRequestInsteadOfReturningCurrentEvidence() throws Exception {
+        ToolBackend legacy = mock(ToolBackend.class, org.mockito.Mockito.CALLS_REAL_METHODS);
+        when(legacy.videoEvidence(5L,null,null)).thenReturn("current");
+        assertEquals("current",legacy.videoEvidence(5L,null,null,null));
+        assertThrows(UnsupportedOperationException.class,()->legacy.videoEvidence(5L,null,null,11L));
     }
 }

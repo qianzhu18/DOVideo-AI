@@ -89,7 +89,11 @@ public class KnowledgeAnswerService {
                                                               List<KnowledgeSearchHit> hits) {
         if (draft == null || draft.citations() == null || draft.citations().isEmpty()) return List.of();
         Map<String, KnowledgeSearchHit> bySegmentId = new LinkedHashMap<>();
-        for (KnowledgeSearchHit hit : hits) bySegmentId.put(hit.segmentId(), hit);
+        for (KnowledgeSearchHit hit : hits) {
+            for (var raw : hit.evidence()) bySegmentId.put(raw.segmentId(), new KnowledgeSearchHit(
+                    raw.segmentId(),raw.sourceId(),hit.sourceType(),raw.mediaId(),hit.title(),raw.startMs(),raw.endMs(),
+                    hit.score(),raw.transcript(),raw.ocrText(),"",hit.matchType(),raw.versionId(),hit.indexProfile(),List.of(raw)));
+        }
 
         List<KnowledgeAnswerCitation> verified = new ArrayList<>();
         for (KnowledgeAnswerDraft.CitationDraft citation : draft.citations()) {
@@ -100,7 +104,7 @@ public class KnowledgeAnswerService {
             KnowledgeSearchHit hit = bySegmentId.get(citation.segmentId());
             verified.add(new KnowledgeAnswerCitation(
                     hit.segmentId(), hit.sourceId(), hit.mediaId(), hit.title(), hit.startMs(), hit.endMs(),
-                    citation.claim().trim(), citation.quote().trim(), hit.score()));
+                    citation.claim().trim(), citation.quote().trim(), hit.score(), hit.versionId()));
         }
         return verified;
     }
@@ -109,8 +113,7 @@ public class KnowledgeAnswerService {
         if (hit == null || isBlank(quote)) return false;
         String normalizedQuote = normalize(quote);
         if (normalizedQuote.length() < 4) return false;
-        String evidence = normalize(String.join("\n", nonNull(hit.transcript()), nonNull(hit.ocrText()),
-                nonNull(hit.summary())));
+        String evidence = normalize(String.join("\n", nonNull(hit.transcript()), nonNull(hit.ocrText())));
         return evidence.contains(normalizedQuote);
     }
 

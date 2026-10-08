@@ -39,4 +39,10 @@ class EvidenceMetricsTest(unittest.TestCase):
         golden = json.loads((root/'eval/evidence-golden-v1.json').read_text())
         self.assertEqual(len(validate_golden(golden,root)['videos']),13)
 
+class PercentileTest(unittest.TestCase):
+    def test_nearest_rank_preserves_tail_in_small_quality_sets(self):
+        from evidence_benchmark import percentile
+        self.assertEqual(14, percentile(list(range(1,15)), .95))
+        self.assertEqual(95, percentile(list(range(1,101)), .95))
+
 if __name__ == '__main__': unittest.main()

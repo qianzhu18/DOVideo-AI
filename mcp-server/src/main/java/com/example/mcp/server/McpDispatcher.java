@@ -165,10 +165,11 @@ public class McpDispatcher {
         ask.put("name", "ask_video_knowledge");
         ask.put("description",
                 "Ask a natural-language question over the video knowledge base and get a "
-                + "grounded answer: every claim is backed by server-verified citations "
+                + "answer with citations whose original source, timestamps and verbatim quotes are checked "
                 + "(source title, mediaId, millisecond timestamps, verbatim quote). Returns "
                 + "answerability SUPPORTED with citations, NOT_READY while ingesting, or INSUFFICIENT_EVIDENCE when the "
-                + "corpus cannot support an answer — relay that refusal instead of guessing.");
+                + "corpus cannot support an answer — relay that refusal instead of guessing. "
+                + "Quote matching does not prove semantic support for a claim; inspect the original evidence.");
         ObjectNode askSchema = ask.putObject("inputSchema");
         askSchema.put("type", "object");
         ObjectNode askProps = askSchema.putObject("properties");
@@ -196,6 +197,7 @@ public class McpDispatcher {
         evidenceSchema.put("type", "object");
         ObjectNode evidenceProps = evidenceSchema.putObject("properties");
         evidenceProps.putObject("mediaId").put("type", "integer").put("description", "Video id from a search hit");
+        evidenceProps.putObject("versionId").put("type", "integer").put("minimum", 1).put("description", "Exact published version from a citation; omit for current version");
         evidenceProps.putObject("startMs").put("type", "integer")
                 .put("description", "Range start in milliseconds (optional)");
         evidenceProps.putObject("endMs").put("type", "integer")
@@ -233,9 +235,10 @@ public class McpDispatcher {
                         optionalString(args, "strategy"));
                 case "get_knowledge_catalog" -> backend.knowledgeCatalog(requiredLong(args, "spaceId", tool));
                 case "get_video_evidence" -> backend.videoEvidence(
-                        optionalLong(args, "mediaId"),
+                        requiredLong(args, "mediaId", tool),
                         optionalLong(args, "startMs"),
-                        optionalLong(args, "endMs"));
+                        optionalLong(args, "endMs"),
+                        optionalLong(args, "versionId"));
                 default -> throw new InvalidParams("Unknown tool: " + tool);
             };
             audit.record(clientLabel, tool, true, elapsedMs(startedAt), null);
@@ -279,7 +282,8 @@ public class McpDispatcher {
             if ("mediaId".equals(field)) throw new InvalidParams("get_video_evidence requires 'mediaId'");
             return null;
         }
-        if (!node.canConvertToLong()) throw new InvalidParams("'" + field + "' must be an integer");
+        if (!node.isIntegralNumber() || !node.canConvertToLong()) throw new InvalidParams("'" + field + "' must be an integer");
+        if ("versionId".equals(field) && node.asLong() <= 0) throw new InvalidParams("'versionId' must be positive");
         return node.asLong();
     }
 

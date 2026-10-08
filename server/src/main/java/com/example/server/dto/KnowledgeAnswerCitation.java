@@ -13,6 +13,11 @@ public record KnowledgeAnswerCitation(
         long endMs,
         String claim,
         String quote,
-        double retrievalScore
+        double retrievalScore,
+        Long versionId
 ) {
+    public KnowledgeAnswerCitation(String segmentId, Long sourceId, Long mediaId, String title,
+                                   long startMs, long endMs, String claim, String quote, double retrievalScore) {
+        this(segmentId,sourceId,mediaId,title,startMs,endMs,claim,quote,retrievalScore,null);
+    }
 }

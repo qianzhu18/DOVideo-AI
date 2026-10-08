@@ -55,6 +55,8 @@ public class KnowledgeSearchService {
      * 1/6). Re-tune per corpus via the property — scores are embedding-dependent.
      */
     private final double minVectorScore;
+    @org.springframework.beans.factory.annotation.Autowired
+    private KnowledgeBlockIndexService blockIndex;
 
     public KnowledgeSearchService(KnowledgeSpaceService spaceService,
                                   KnowledgeCollectionService collectionService,
@@ -179,6 +181,13 @@ public class KnowledgeSearchService {
                 })
                 .orderByAsc("start_ms")
                 .last("LIMIT " + MAX_KEYWORD_HITS));
+        if (blockIndex != null) {
+            matched = new ArrayList<>(matched);
+            var blockCandidates = blockIndex.inScope(scope);
+            var blockVersions = blockCandidates.stream().map(KnowledgeSegment::getVersionId).collect(java.util.stream.Collectors.toSet());
+            matched.removeIf(raw -> blockVersions.contains(raw.getVersionId()));
+            for (var block : blockCandidates) if (coverage(needles,block)>0) matched.add(block);
+        }
         if (matched.isEmpty()) return List.of();
 
         List<Recalled> scored = new ArrayList<>(matched.size());
@@ -212,6 +221,7 @@ public class KnowledgeSearchService {
         for (KnowledgeSegment segment : segmentMapper.selectBatchIds(segmentIds)) {
             byId.put(segment.getId(), segment);
         }
+        if (blockIndex != null) for (var block : blockIndex.resolve(segmentIds)) byId.put(block.getId(),block);
         List<Recalled> ordered = new ArrayList<>(hits.size());
         for (KnowledgeVectorIndex.Hit hit : hits) {
             KnowledgeSegment segment = byId.get(hit.segmentId());
@@ -251,7 +261,9 @@ public class KnowledgeSearchService {
                     segment.getTranscript(),
                     segment.getOcrText(),
                     segment.getSummary(),
-                    candidate.matchType()));
+                    candidate.matchType(), segment.getVersionId(),
+                    segment.getMetadata() == null ? "legacy-v1" : java.util.Objects.toString(com.alibaba.fastjson2.JSON.parseObject(segment.getMetadata()).getString("indexProfile"),"legacy-v1"),
+                    blockIndex == null ? List.of(com.example.server.dto.KnowledgeEvidence.from(segment)) : blockIndex.evidence(segment)));
         }
         return hits;
     }

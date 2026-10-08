@@ -311,6 +311,17 @@
                   <span class="search-hit-kind">{{ hit.sourceType === 'SCRIPT' ? '脚本' : '视频' }}·{{ ({ vector: '语义', keyword: '关键词', hybrid: '混合检索' })[hit.matchType] || hit.matchType }}</span>
                 </div>
                 <p>{{ hit.transcript || hit.ocrText || hit.summary }}</p>
+                <details v-if="hit.evidence?.length" class="original-evidence">
+                  <summary>原文片段（{{ hit.evidence.length }}）</summary>
+                  <div v-for="raw in hit.evidence" :key="raw.segmentId">
+                    <button v-if="raw.mediaId" type="button" class="search-hit-time"
+                      :aria-label="`回看原文 ${hit.title} ${formatMs(raw.startMs)}`"
+                      @click="$emit('open-evidence', { mediaId: raw.mediaId, timestampMs: raw.startMs })"
+                    >{{ formatMs(raw.startMs) }} – {{ formatMs(raw.endMs) }}</button>
+                    <span v-else>{{ formatMs(raw.startMs) }} – {{ formatMs(raw.endMs) }}</span>
+                    <p>{{ raw.transcript || raw.ocrText }}</p>
+                  </div>
+                </details>
               </li>
             </ul>
           </section>

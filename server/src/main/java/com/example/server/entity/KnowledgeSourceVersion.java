@@ -19,6 +19,8 @@ public class KnowledgeSourceVersion {
     private String contentHash;
     private String parserVersion;
     private String embeddingModel;
+    private String indexProfile;
+    private Integer vectorDimension;
     private String status;
     private String failureReason;
     private LocalDateTime createdAt;

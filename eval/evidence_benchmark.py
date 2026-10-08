@@ -8,6 +8,7 @@ Holdout is opt-in and must not be used for tuning. Reports retain raw result ide
 import argparse
 import hashlib
 import json
+import math
 import os
 import statistics
 import subprocess
@@ -15,6 +16,11 @@ import time
 from pathlib import Path
 from evidence_metrics import score_case, summarize, validate_golden
 from knowledge_eval import http_json, login
+
+def percentile(values, fraction):
+    """Nearest-rank percentile; small samples must not silently discard the tail."""
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(len(ordered) * fraction) - 1)]
 
 def main():
     parser = argparse.ArgumentParser()
@@ -52,12 +58,13 @@ def main():
         selected = [r for r in rows if r['strategy']==strategy]
         latency = sorted(r['seconds'] for r in selected)
         results[strategy] = {**summarize(selected), 'p50Seconds':statistics.median(latency),
-            'p95Seconds':latency[max(0, int(len(latency)*.95)-1)]}
+            'p95Seconds':percentile(latency, .95)}
     manifest = {'date':time.strftime('%Y-%m-%d'), 'gitSha':subprocess.check_output(
         ['git','rev-parse','HEAD'], cwd=root, text=True).strip(),
         'goldenSha256':hashlib.sha256(args.golden.read_bytes()).hexdigest(),
         'split':args.split,'mapping':mapping,'modelQualityClaim':mapping.get('realEmbedding',False),
-        'productionCapacityClaim':False,'billingCost':None}
+        'productionCapacityClaim':False,'billingCost':None,'latencyPercentileMethod':'nearest-rank-ceil',
+        'workingTreeDirty':bool(subprocess.check_output(['git','status','--porcelain'],cwd=root,text=True).strip())}
     args.output.parent.mkdir(parents=True,exist_ok=True)
     args.output.write_text(json.dumps({'manifest':manifest,'metrics':results,'cases':rows},ensure_ascii=False,indent=2)+'\n')
     print(json.dumps(results, ensure_ascii=False))

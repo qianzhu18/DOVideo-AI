@@ -9,7 +9,7 @@ import java.util.List;
 /**
  * Zero-reburn transcript import for one registered media asset: timestamped segments
  * produced elsewhere (e.g. an archived analysis checkpoint) enter the SAME indexing
- * pipeline as natively analyzed videos — chunk summaries, MySQL segment rows, Qdrant
+ * pipeline as natively analyzed videos — original evidence, profiled retrieval blocks, Qdrant
  * vectors, status machine and audit trail included.
  */
 public record TranscriptImportRequest(

@@ -47,6 +47,8 @@ public class KnowledgeSegmentIndexService {
     private final KnowledgeIndexPublisher publisher;
     private final KnowledgeMetrics metrics;
     private final org.redisson.api.RedissonClient locks;
+    private final KnowledgeBlockIndexService blockIndex;
+    private final String indexProfile;
 
     public KnowledgeSegmentIndexService(KnowledgeSourceService sourceService,
                                         KnowledgeSourceVersionMapper versionMapper,
@@ -56,7 +58,9 @@ public class KnowledgeSegmentIndexService {
                                         VideoChunkingService chunkingService,
                                         EmbeddingUtils embeddingUtils,
                                         KnowledgeAuditService auditService,
-                                        @Value("${ai.embedding.model:BAAI/bge-m3}") String embeddingModel, KnowledgeIndexPublisher publisher, org.redisson.api.RedissonClient locks, KnowledgeMetrics metrics) {
+                                        @Value("${ai.embedding.model:BAAI/bge-m3}") String embeddingModel, KnowledgeIndexPublisher publisher, org.redisson.api.RedissonClient locks, KnowledgeMetrics metrics,
+                                        KnowledgeBlockIndexService blockIndex,
+                                        @Value("${knowledge.index.profile:raw-boundary-v1-max1400-overlap1}") String indexProfile) {
         this.sourceService = sourceService;
         this.versionMapper = versionMapper;
         this.segmentMapper = segmentMapper;
@@ -69,6 +73,10 @@ public class KnowledgeSegmentIndexService {
         this.publisher = publisher;
         this.metrics = metrics;
         this.locks = locks;
+        this.blockIndex = blockIndex;
+        this.indexProfile = indexProfile;
+        if (!"legacy-v1".equals(indexProfile) && !EvidenceBlockChunker.PROFILE.equals(indexProfile))
+            throw new IllegalArgumentException("未知知识索引 profile");
     }
 
     /** Build a new generation; publish only after all embeddings and vector writes succeed. */
@@ -96,12 +104,15 @@ public class KnowledgeSegmentIndexService {
         version.setStatus(STATUS_INDEXING);
         version.setParserVersion(PARSER_VERSION);
         version.setEmbeddingModel(embeddingModel);
+        version.setIndexProfile(indexProfile);
+        if (!"legacy-v1".equals(indexProfile)) version.setParserVersion("raw-evidence-v2");
         versionMapper.insert(version);
         try {
             List<KnowledgeSegment> segments = metrics.measure("ingest.chunking", () -> buildSegments(source, version));
             if (segments.isEmpty()) throw new IllegalStateException("解析上下文为空，无法生成知识分段");
             for (KnowledgeSegment segment : segments) segmentMapper.insert(segment);
-            upsertVectors(source, version, segments);
+            if ("legacy-v1".equals(indexProfile)) upsertVectors(source, version, segments);
+            else blockIndex.index(source, version, segments);
             metrics.run("ingest.publish", () -> publisher.publish(source, version));
             try {
             auditService.record(source.getOwnerUserId(), "SOURCE_INDEXED", "SOURCE", source.getId(),
@@ -146,18 +157,26 @@ public class KnowledgeSegmentIndexService {
      * The MCP adapter cites evidence through this; it never touches the segment tables.
      */
     public List<KnowledgeSegment> listSegments(Long userId, Long mediaId) {
+        return listSegments(userId,mediaId,null);
+    }
+
+    public List<KnowledgeSegment> listSegments(Long userId, Long mediaId, Long versionId) {
         KnowledgeSource source = sourceService.requireSourceByMediaId(mediaId);
         if (!userId.equals(source.getOwnerUserId())) {
             throw new SecurityException("无权访问该内容源");
         }
         if (!STATUS_READY.equals(source.getStatus())) return List.of();
-        KnowledgeSourceVersion version = currentVersion(source);
+        KnowledgeSourceVersion version = versionId == null ? currentVersion(source) : versionMapper.selectById(versionId);
+        if (version == null || !source.getId().equals(version.getSourceId()) || !STATUS_READY.equals(version.getStatus())) {
+            throw new BusinessException(com.example.server.common.ErrorCode.NOT_FOUND,"证据版本不存在或尚未发布");
+        }
         return segmentMapper.selectList(new QueryWrapper<KnowledgeSegment>()
                 .eq("media_id", mediaId).eq("version_id", version.getId())
                 .orderByAsc("start_ms"));
     }
 
     private List<KnowledgeSegment> buildSegments(KnowledgeSource source, KnowledgeSourceVersion version) {
+        if (!"legacy-v1".equals(indexProfile)) return buildOriginalEvidence(source, version);
         List<VideoChunk> chunks = checkpointService.loadChunks(source.getMediaId());
         if (chunks == null || chunks.isEmpty()) {
             VideoContext context = checkpointService.loadContext(source.getMediaId());
@@ -183,6 +202,25 @@ public class KnowledgeSegmentIndexService {
             }
         }
         return segments;
+    }
+
+    private List<KnowledgeSegment> buildOriginalEvidence(KnowledgeSource source, KnowledgeSourceVersion version) {
+        VideoContext context = checkpointService.loadContext(source.getMediaId());
+        if (context == null) throw new IllegalStateException("没有原始解析上下文，请先完成转写");
+        List<KnowledgeSegment> rows = new ArrayList<>();
+        long previousStart = -1;
+        for (var raw : context.segments()) {
+            if (raw.startMs() < previousStart) throw new IllegalArgumentException("原始证据时间必须有序");
+            previousStart = raw.startMs();
+            if (raw.transcript().isBlank() && raw.ocrTexts().isEmpty()) continue;
+            var row = new KnowledgeSegment(); row.setId(UUID.randomUUID().toString());
+            row.setSourceId(source.getId()); row.setVersionId(version.getId()); row.setMediaId(source.getMediaId());
+            row.setStartMs(raw.startMs()); row.setEndMs(raw.endMs()); row.setTranscript(raw.transcript());
+            row.setOcrText(String.join("\n",raw.ocrTexts())); row.setSummary(""); row.setContentHash(source.getContentHash());
+            row.setMetadata(JSON.toJSONString(java.util.Map.of("kind","original-asr-ocr","indexProfile",indexProfile)));
+            rows.add(row);
+        }
+        return rows;
     }
 
     private void upsertVectors(KnowledgeSource source, KnowledgeSourceVersion version, List<KnowledgeSegment> segments) {
