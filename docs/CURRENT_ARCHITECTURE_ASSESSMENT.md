@@ -86,7 +86,7 @@ flowchart LR
 
 知识库解决内容组织、更新和查询；MCP 解决外部学习助手如何发现并调用同一能力，两者分属不同层。网页直接调用 API，MCP 不应另建一套索引或权限逻辑。
 
-五个只读工具及参数见 [MCP SOP](MCP_SOP.md)。目录工具返回引用与入库状态；search 可指定空间和目录，按 segmentId 去重。省略空间时 search 最多十个 owned spaces、ask 使用默认空间，仍有契约差异。所有 MCP 客户端使用同一个配置的上游主体，不适合直接宣称已实现社区成员隔离。
+五个只读工具及参数见 [MCP SOP](MCP_SOP.md)。目录工具返回引用与入库状态；search 可指定空间和目录，按 segmentId 去重。省略空间时 search 与 ask 均由后端选择默认空间；目录需要显式空间。`/search/details` 与 MCP 检索返回 scope/hits/warnings 区分准备状态，旧 `/search` 保留数组。所有 MCP 客户端使用同一个配置的上游主体，不适合直接宣称已实现社区成员隔离。
 
 ## 工程观测与源码入口
 

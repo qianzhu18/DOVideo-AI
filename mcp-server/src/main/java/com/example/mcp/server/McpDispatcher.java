@@ -27,7 +27,7 @@ import java.util.Set;
 public class McpDispatcher {
 
     public static final String SERVER_NAME = "dovideo-knowledge";
-    public static final String SERVER_VERSION = "0.1.0";
+    public static final String SERVER_VERSION = "0.2.0";
     public static final String LATEST_PROTOCOL_VERSION = "2025-06-18";
     private static final Set<String> SUPPORTED_PROTOCOL_VERSIONS =
             Set.of("2024-11-05", "2025-03-26", LATEST_PROTOCOL_VERSION);
@@ -142,7 +142,7 @@ public class McpDispatcher {
         search.put("description",
                 "Search video evidence across all sources inside one knowledge space "
                 + "(hybrid semantic + keyword by default). Returns hits with source title, "
-                + "mediaId, startMs/endMs timestamps, match type and score. Empty result means "
+                + "mediaId, startMs/endMs timestamps, match type and score. Read scope status and warnings before interpreting empty hits. Empty READY results mean "
                 + "the corpus holds no supporting evidence — say so instead of guessing.");
         ObjectNode searchSchema = search.putObject("inputSchema");
         searchSchema.put("type", "object");
@@ -150,7 +150,7 @@ public class McpDispatcher {
         searchProps.putObject("query").put("type", "string")
                 .put("description", "Natural-language question or keywords");
         searchProps.putObject("spaceId").put("type", "integer")
-                .put("description", "Space to search; omit to search up to 10 owned spaces");
+                .put("description", "Space to search; omit to use the default space");
         searchProps.putObject("collectionId").put("type", "integer")
                 .put("description", "Restrict to a folder and descendants; requires spaceId");
         searchProps.putObject("topK").put("type", "integer").put("minimum", 1).put("maximum", 20)
@@ -167,7 +167,7 @@ public class McpDispatcher {
                 "Ask a natural-language question over the video knowledge base and get a "
                 + "grounded answer: every claim is backed by server-verified citations "
                 + "(source title, mediaId, millisecond timestamps, verbatim quote). Returns "
-                + "answerability SUPPORTED with citations, or INSUFFICIENT_EVIDENCE when the "
+                + "answerability SUPPORTED with citations, NOT_READY while ingesting, or INSUFFICIENT_EVIDENCE when the "
                 + "corpus cannot support an answer — relay that refusal instead of guessing.");
         ObjectNode askSchema = ask.putObject("inputSchema");
         askSchema.put("type", "object");

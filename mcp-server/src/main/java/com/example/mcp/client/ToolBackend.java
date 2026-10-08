@@ -18,8 +18,8 @@ public interface ToolBackend {
 
     /**
      * Grounded cross-video RAG answer with server-verified citations. A null spaceId
-     * resolves to the account's default space; an empty account gets a deterministic
-     * refusal instead of an upstream call.
+     * resolves to the account's default space in the backend; readiness is returned
+     * separately from answerability.
      */
     String askKnowledge(String query, Long spaceId, Long collectionId, Integer topK, String strategy)
             throws Exception;

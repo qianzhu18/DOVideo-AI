@@ -103,12 +103,14 @@ def main():
         args.space_id = main_space["id"] if main_space else None
         if args.space_id:
             print(f"    auto-picked main space: {args.space_id} ({main_space['name']})")
-    # No --space-id means "search all spaces" — the assistant-friendly default.
+    # No --space-id resolves to the default owned space in the backend.
     search_args = {"query": args.query, "topK": 3}
     if args.space_id:
         search_args["spaceId"] = args.space_id
 
-    hits = client.call_tool("search_video_knowledge", search_args)
+    result = client.call_tool("search_video_knowledge", search_args)
+    hits = result["hits"]
+    print(f"    scope: {result['scope']['status']} (space {result['scope']['spaceId']})")
     print(f"[4] search_video_knowledge ok: {len(hits)} hit(s)")
     for hit in hits:
         print(f"    [{hit['startSec']}-{hit['endSec']}s] {hit['title']} "
