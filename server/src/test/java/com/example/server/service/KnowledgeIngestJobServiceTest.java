@@ -13,6 +13,11 @@ class KnowledgeIngestJobServiceTest {
     private final KnowledgeIngestJobMapper rows = mock(KnowledgeIngestJobMapper.class);
     private final RocketMQTemplate queue = mock(RocketMQTemplate.class);
     private final KnowledgeIngestJobService service = new KnowledgeIngestJobService(rows, queue, "knowledge-test");
+    @Test void readOnlyBenchmarkCannotDispatchOrRecoverCopiedPendingJobs() {
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "dispatchEnabled", false);
+        service.dispatchOutbox();
+        verifyNoInteractions(rows, queue);
+    }
     @Test void enqueuePersistsBeforeAnyQueueAccess() {
         var source = new KnowledgeSource(); source.setId(1L); source.setMediaId(5L);
         source.setOwnerUserId(7L); source.setStatus("PENDING");

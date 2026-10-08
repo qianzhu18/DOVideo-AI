@@ -21,6 +21,8 @@ public class KnowledgeIngestJobService {
     private final KnowledgeIngestJobMapper jobs;
     private final RocketMQTemplate queue;
     private final String topic;
+    @Value("${knowledge.ingest.dispatch-enabled:true}")
+    private boolean dispatchEnabled = true;
 
     public KnowledgeIngestJobService(KnowledgeIngestJobMapper jobs, RocketMQTemplate queue,
             @Value("${knowledge.ingest.topic:knowledge-ingest}") String topic) {
@@ -36,6 +38,7 @@ public class KnowledgeIngestJobService {
 
     @Scheduled(fixedDelayString = "${knowledge.ingest.dispatch-interval-ms:10000}")
     public void dispatchOutbox() {
+        if (!dispatchEnabled) return; // Read/evaluation runtimes must not process copied pending jobs.
         jobs.recoverInterrupted();
         for (KnowledgeIngestJob job : jobs.dispatchable()) {
             if (jobs.reserveDispatch(job.getId()) == 0) continue;
