@@ -14,7 +14,9 @@ public record KnowledgeSegmentView(
         Long endMs,
         String transcript,
         String ocrText,
-        String summary) {
+        String summary,
+        Long versionId,
+        Long sourceId) {
 
     public static KnowledgeSegmentView from(KnowledgeSegment segment) {
         return new KnowledgeSegmentView(
@@ -24,6 +26,8 @@ public record KnowledgeSegmentView(
                 segment.getEndMs(),
                 segment.getTranscript(),
                 segment.getOcrText(),
-                segment.getSummary());
+                segment.getSummary(),
+                segment.getVersionId(),
+                segment.getSourceId());
     }
 }

@@ -30,6 +30,7 @@ import statistics
 import string
 import time
 import urllib.request
+import urllib.parse
 
 # Mirrors the server's Java normalization: ASCII punctuation via string.punctuation,
 # CJK punctuation enumerated (Python re has no \p{Punct}).
@@ -44,7 +45,9 @@ def http_json(base_url, path, payload=None, token=None, method=None, timeout=120
     request.add_header("Content-Type", "application/json")
     if token:
         request.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    # Local fixtures must remain local even when macOS enables a system HTTP proxy.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({})) if urllib.parse.urlsplit(url).hostname in ("127.0.0.1", "localhost", "::1") else urllib.request.build_opener()
+    with opener.open(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
 

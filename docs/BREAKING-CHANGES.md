@@ -1,7 +1,7 @@
 # 兼容变更与发布说明
 
 状态：`active`
-最后复核：2026-10-07
+最后复核：2026-10-09
 
 本页说明本次知识生命周期改造对客户端、数据与运行的影响。尚未生产部署；代码与本地证据见 [CURRENT](CURRENT.md)。原 V8 台账与 MD5 去重说明保留在 [历史兼容记录](archive/批处理兼容变更-V8.md)，不沿用其中的数据库回滚命令作为 V9/V10 操作。
 
@@ -40,7 +40,7 @@ Actuator 默认仅 health；`MANAGEMENT_EXPOSURE=health,prometheus,metrics` 显�
 
 ## 发布与回退边界
 
-上线前需备份 MySQL 与关键对象/Checkpoint，在目标版本副本验证 V9/V10 回填、来源/引用计数、任务与真实问答/播放；确认独立 topic/group 与 MCP 上游账号范围。已有本地测试不代替这些发布前检查。
+上线前需备份 MySQL 与关键对象/Checkpoint，在目标版本副本验证 V9/V10/V11 回填、来源/引用计数、任务与真实问答/播放；确认独立 topic/group 与 MCP 上游账号范围。已有本地测试不代替这些发布前检查。
 
 新目录操作不再同步旧 Qdrant `spaceId/collectionId` payload，查询使用 MySQL placements 解析范围。旧后端依赖旧 payload，直接回滚二进制可能返回错误位置；需要修复/重建该投影并验证旧查询后才可回退。新增 schema 能保留，不表示旧行为一定兼容；具体回退需按发布数据制定。
 
@@ -53,3 +53,9 @@ Actuator 默认仅 health；`MANAGEMENT_EXPOSURE=health,prometheus,metrics` 显�
 ## 查询范围契约（2026-10-08）
 
 MCP `search_video_knowledge` 从数组改为 `{scope,hits,warnings}`，省略 spaceId 从最多十个空间改为后端默认空间。更新外部客户端读取 hits；需要其他空间时先发现再显式指定。ask 省略范围也由后端解析；collectionId 必须与 spaceId 同传。HTTP 新增 `/knowledge/search/details` 对象契约，旧 `/knowledge/search` 保留数组。ask/stream 增加 scope；未就绪或失败可返回 NOT_READY，客户端应显示处理状态。Web 已更新，当前 MCP 共享主体边界不变。无需数据库迁移。
+
+## V11 原文与检索块（2026-10-08）
+
+新增块、原文映射与向量缓存表，版本增加 index_profile/vector_dimension，旧版本默认 legacy-v1。已有 V1–V10 不重写；当前默认 profile 为 raw-boundary-v1-max1400-overlap1，新入库与显式重建使用它，旧资料不会自动重建。检索增加 evidence/versionId/indexProfile；新 segmentId 表示检索块，引用必须读取 evidence 内原文 ID。ask 引用增加 versionId，摘要不再可引用。原文 API/MCP 支持显式 versionId，旧参数仍查询当前版本。回退可配置 knowledge.index.profile=legacy-v1 并重建新版本，保留 V11 schema 和旧证据；旧二进制不能正确读取新块索引，不可只回滚代码后继续使用新版本指针。旧版清理需等引用保留策略验收，当前保留历史数据。
+
+MCP 数字参数不再截断小数；versionId 要求正整数。未实现版本查询的旧适配器拒绝显式历史版本请求；生产适配器已透传版本。网页回看后返回知识库保留搜索，按账号身份重建视图。Milvus 已成为后续优先目标，本版本仍使用 Qdrant，未进行生产切流。

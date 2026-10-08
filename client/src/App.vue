@@ -515,7 +515,8 @@
       </div>
     </main>
     <KnowledgeLibrary
-      v-if="activeView === 'knowledge'"
+      v-show="activeView === 'knowledge'"
+      :key="currentUser?.id ?? 'anonymous'"
       :user="currentUser"
       @request-login="openAuthModal"
       @open-evidence="openKnowledgeEvidence"

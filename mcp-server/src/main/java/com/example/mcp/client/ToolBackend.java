@@ -29,4 +29,8 @@ public interface ToolBackend {
 
     /** Raw evidence rows (transcript/OCR/summary per time window) of one media. */
     String videoEvidence(Long mediaId, Long startMs, Long endMs) throws Exception;
+    default String videoEvidence(Long mediaId, Long startMs, Long endMs, Long versionId) throws Exception {
+        if (versionId != null) throw new UnsupportedOperationException("Historical evidence versions are not supported by this backend");
+        return videoEvidence(mediaId,startMs,endMs);
+    }
 }

@@ -1,7 +1,7 @@
 # MCP 接入与验收 SOP
 
 状态：`active`
-最后复核：2026-10-07
+最后复核：2026-10-09
 
 本页维护当前五工具与认证契约。交付结果见 [CURRENT](CURRENT.md)，9 月四工具记录保留在 [历史 MCP 验收](archive/MCP接入验收-2026-09-27.md)。
 
@@ -76,3 +76,9 @@ bash scripts/mcp_sop_check.sh
 | GET /mcp 不工作 | 当前适配器使用 POST JSON-RPC，无 GET SSE 长连接路径 |
 
 发布与认证边界见 [兼容说明](BREAKING-CHANGES.md)，结构见 [当前架构](CURRENT_ARCHITECTURE_ASSESSMENT.md)。
+
+## 原文版本（2026-10-08）
+
+检索 hits 增加 evidence 原文数组和索引 profile/versionId。新 segmentId 是检索块；引用应使用 evidence 的 segmentId、versionId 和原始时间。get_video_evidence 可传 versionId 读取该视频保留的已发布原文版本，省略读取当前版；结果包含原文 ID/版本。ask 引用携带原文 ID/versionId，摘要不能作为引用依据。删除或越权仍拒绝，MCP 不持有数据库直连权限。
+
+versionId 必须是正整数，小数/零/负数/字符串返回协议参数错误。旧适配器如未实现历史版本能力，指定版本会明确报错，不能降级为当前版；省略版本仍兼容当前版读取。原文存在性校验不代表结论语义成立。

@@ -23,4 +23,7 @@ public class KnowledgeMetrics {
     }
     public void run(String stage, Runnable action) { measure(stage, () -> { action.run(); return null; }); }
     public void count(String event) { registry.counter("knowledge.events", "event", event).increment(); }
+    public void count(String event, long amount) {
+        if (amount > 0) registry.counter("knowledge.events", "event", event).increment(amount);
+    }
 }

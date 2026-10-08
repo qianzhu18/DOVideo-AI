@@ -76,6 +76,10 @@ public class DovideoApiClient implements ToolBackend {
             putTrimmed(item, "transcript", hit.path("transcript"));
             putTrimmed(item, "ocrText", hit.path("ocrText"));
             putTrimmed(item, "summary", hit.path("summary"));
+            if (item.has("evidence")) for (JsonNode raw : item.path("evidence")) {
+                putTrimmed((ObjectNode)raw,"transcript",raw.path("transcript"));
+                putTrimmed((ObjectNode)raw,"ocrText",raw.path("ocrText"));
+            }
             hits.add(item);
         }
         return result.toString();
@@ -102,7 +106,13 @@ public class DovideoApiClient implements ToolBackend {
 
     @Override
     public String videoEvidence(Long mediaId, Long startMs, Long endMs) throws Exception {
-        JsonNode segments = call("GET", "/knowledge/sources/media/" + mediaId + "/segments", null, true);
+        return videoEvidence(mediaId,startMs,endMs,null);
+    }
+
+    @Override
+    public String videoEvidence(Long mediaId, Long startMs, Long endMs, Long versionId) throws Exception {
+        JsonNode segments = call("GET", "/knowledge/sources/media/" + mediaId + "/segments"
+                + (versionId == null ? "" : "?versionId=" + versionId), null, true);
         return compactSegments(segments, startMs, endMs);
     }
 
@@ -175,6 +185,7 @@ public class DovideoApiClient implements ToolBackend {
                 ? data.path("citations") : mapper.createArrayNode()) {
             ObjectNode item = citations.addObject();
             item.put("segmentId", citation.path("segmentId").asText());
+            if (citation.has("versionId")) item.set("versionId",citation.get("versionId"));
             item.put("title", citation.path("title").asText());
             if (citation.path("mediaId").isMissingNode() || citation.path("mediaId").isNull()) {
                 item.putNull("mediaId");
@@ -221,6 +232,9 @@ public class DovideoApiClient implements ToolBackend {
             if (!overlaps || included >= MAX_EVIDENCE_ROWS) continue;
             ObjectNode item = out.addObject();
             item.put("startMs", segStart);
+            item.put("segmentId",segment.path("id").asText());
+            if (segment.has("versionId")) item.set("versionId",segment.get("versionId"));
+            if (segment.has("sourceId")) item.set("sourceId",segment.get("sourceId"));
             item.put("endMs", segEnd);
             item.put("startSec", segStart / 1000);
             item.put("endSec", segEnd / 1000);

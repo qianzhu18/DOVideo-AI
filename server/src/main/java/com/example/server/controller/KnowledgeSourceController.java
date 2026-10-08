@@ -121,8 +121,9 @@ public class KnowledgeSourceController {
     @GetMapping("/media/{mediaId}/segments")
     public Result<List<KnowledgeSegmentView>> segments(
             @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId,
-            @PathVariable Long mediaId) {
-        return Result.ok(segmentIndexService.listSegments(userId, mediaId).stream()
+            @PathVariable Long mediaId,
+            @org.springframework.web.bind.annotation.RequestParam(required = false) Long versionId) {
+        return Result.ok(segmentIndexService.listSegments(userId, mediaId, versionId).stream()
                 .map(KnowledgeSegmentView::from)
                 .toList());
     }
