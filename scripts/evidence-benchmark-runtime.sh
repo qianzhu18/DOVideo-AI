@@ -18,4 +18,4 @@ export KNOWLEDGE_INGEST_GROUP=evidence-ingest-workers-20261008
 export ROCKETMQ_PRODUCER_GROUP=evidence-producer-20261008
 exec server/mvnw -f server/pom.xml -q compile org.codehaus.mojo:exec-maven-plugin:3.5.0:java \
   -Dexec.mainClass=com.example.server.ServerApplication \
-  -Dexec.args='--knowledge.ingest.dispatch-enabled=false'
+  -Dexec.args="${KB_BENCHMARK_ARGS:---knowledge.ingest.dispatch-enabled=false}"

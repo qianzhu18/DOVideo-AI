@@ -49,6 +49,8 @@ public class KnowledgeSegmentIndexService {
     private final org.redisson.api.RedissonClient locks;
     private final KnowledgeBlockIndexService blockIndex;
     private final String indexProfile;
+    @org.springframework.beans.factory.annotation.Autowired
+    private KnowledgeLexicalIndexService lexicalIndex;
 
     public KnowledgeSegmentIndexService(KnowledgeSourceService sourceService,
                                         KnowledgeSourceVersionMapper versionMapper,
@@ -113,6 +115,8 @@ public class KnowledgeSegmentIndexService {
             for (KnowledgeSegment segment : segments) segmentMapper.insert(segment);
             if ("legacy-v1".equals(indexProfile)) upsertVectors(source, version, segments);
             else blockIndex.index(source, version, segments);
+            if (lexicalIndex != null && lexicalIndex.enabled())
+                metrics.run("ingest.lexical_write", () -> lexicalIndex.index(source, version));
             metrics.run("ingest.publish", () -> publisher.publish(source, version));
             try {
             auditService.record(source.getOwnerUserId(), "SOURCE_INDEXED", "SOURCE", source.getId(),

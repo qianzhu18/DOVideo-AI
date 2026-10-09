@@ -29,6 +29,8 @@ public class KnowledgeSourceController {
     private final KnowledgeSourceService sourceService;
     private final KnowledgeSegmentIndexService segmentIndexService;
     private final com.example.server.service.KnowledgePlacementService placements;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.example.server.service.KnowledgeLexicalIndexService lexicalIndex;
 
     public KnowledgeSourceController(KnowledgeSourceService sourceService,
                                      KnowledgeSegmentIndexService segmentIndexService,
@@ -104,6 +106,13 @@ public class KnowledgeSourceController {
             @PathVariable Long sourceId,
             @Valid @RequestBody KnowledgeSourceTagsRequest request) {
         return Result.ok(sourceService.replaceTags(userId, sourceId, request));
+    }
+
+    /** Owner-checked, lexical-only backfill of the current published generation. */
+    @PostMapping("/{sourceId}/lexical-index")
+    public Result<Integer> backfillLexical(
+            @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId, @PathVariable Long sourceId) {
+        return Result.ok(lexicalIndex.backfill(userId, sourceId));
     }
 
     /** Manual rebuild of segments and vectors; also the migration path for pre-P2 media. */

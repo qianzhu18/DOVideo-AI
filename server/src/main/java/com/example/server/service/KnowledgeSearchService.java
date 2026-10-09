@@ -57,6 +57,10 @@ public class KnowledgeSearchService {
     private final double minVectorScore;
     @org.springframework.beans.factory.annotation.Autowired
     private KnowledgeBlockIndexService blockIndex;
+    @org.springframework.beans.factory.annotation.Autowired
+    private KnowledgeLexicalIndexService lexicalIndex;
+
+    public record SearchResult(List<KnowledgeSearchHit> hits, List<String> warnings) {}
 
     public KnowledgeSearchService(KnowledgeSpaceService spaceService,
                                   KnowledgeCollectionService collectionService,
@@ -79,25 +83,32 @@ public class KnowledgeSearchService {
     }
 
     public List<KnowledgeSearchHit> search(Long userId, KnowledgeSearchRequest request) {
-        return metrics.measure("search." + normalizeStrategy(request.strategy()), () -> doSearch(userId, request));
+        return searchWithDiagnostics(userId, request).hits();
     }
 
-    private List<KnowledgeSearchHit> doSearch(Long userId, KnowledgeSearchRequest request) {
+    public SearchResult searchWithDiagnostics(Long userId, KnowledgeSearchRequest request) {
+        var warnings = new java.util.concurrent.ConcurrentLinkedQueue<String>();
+        var hits = metrics.measure("search." + normalizeStrategy(request.strategy()), () -> doSearch(userId, request, warnings));
+        return new SearchResult(hits, warnings.stream().distinct().sorted().toList());
+    }
+
+    private List<KnowledgeSearchHit> doSearch(Long userId, KnowledgeSearchRequest request, java.util.Queue<String> warnings) {
         KnowledgeQueryScope scope = scopes.resolve(userId, request.spaceId(), request.collectionId());
         if (scope.generations().isEmpty()) return List.of();
         int topK = normalizeTopK(request.topK());
         String query = request.query().trim();
 
-        List<Recalled> recalled = recall(scope, request, query, topK);
+        List<Recalled> recalled = recall(scope, request, query, topK, warnings);
         return backfill(recalled, userId, request, scope);
     }
 
-    private List<Recalled> recall(KnowledgeQueryScope scope, KnowledgeSearchRequest request, String query, int topK) {
+    private List<Recalled> recall(KnowledgeQueryScope scope, KnowledgeSearchRequest request, String query, int topK, java.util.Queue<String> warnings) {
         String strategy = normalizeStrategy(request.strategy());
         return switch (strategy) {
             case STRATEGY_VECTOR -> vectorRecall(scope, request, query, topK);
-            case STRATEGY_KEYWORD -> keywordRecall(scope, request, query, topK);
-            default -> hybridRecall(scope, request, query, topK);
+            case "like" -> keywordRecall(scope, request, query, topK);
+            case STRATEGY_KEYWORD -> lexicalRecall(scope, request, query, topK, warnings);
+            default -> hybridRecall(scope, request, query, topK, warnings);
         };
     }
 
@@ -122,12 +133,12 @@ public class KnowledgeSearchService {
      * both channels outranks ones found by either alone, the quality improvement must be measured
      * on a fixed corpus; fusion alone does not guarantee better retrieval.
      */
-    private List<Recalled> hybridRecall(KnowledgeQueryScope scope, KnowledgeSearchRequest request, String query, int topK) {
+    private List<Recalled> hybridRecall(KnowledgeQueryScope scope, KnowledgeSearchRequest request, String query, int topK, java.util.Queue<String> warnings) {
         int recallLimit = topK * RECALL_MULTIPLIER;
         var vectorFuture = java.util.concurrent.CompletableFuture.supplyAsync(
                 () -> metrics.measure("recall.vector", () -> vectorRecall(scope, request, query, recallLimit)), executor);
         var keywordFuture = java.util.concurrent.CompletableFuture.supplyAsync(
-                () -> metrics.measure("recall.keyword", () -> keywordRecall(scope, request, query, recallLimit)), executor);
+                () -> metrics.measure("recall.keyword", () -> lexicalRecall(scope, request, query, recallLimit, warnings)), executor);
         List<Recalled> vectorHits = vectorFuture.join();
         List<Recalled> keywordHits = keywordFuture.join();
 
@@ -158,8 +169,35 @@ public class KnowledgeSearchService {
         return switch (strategy.trim().toLowerCase()) {
             case STRATEGY_VECTOR -> STRATEGY_VECTOR;
             case STRATEGY_KEYWORD -> STRATEGY_KEYWORD;
+            case "like" -> "like";
             default -> STRATEGY_HYBRID;
         };
+    }
+
+    private List<Recalled> lexicalRecall(KnowledgeQueryScope scope, KnowledgeSearchRequest request, String query,
+                                         int topK, java.util.Queue<String> warnings) {
+        if (lexicalIndex == null || !lexicalIndex.enabled()) return keywordRecall(scope, request, query, topK);
+        try {
+            var recalled = lexicalIndex.search(query, scope, topK);
+            var byId = new LinkedHashMap<String, KnowledgeSegment>();
+            var ids = recalled.stream().map(MilvusLexicalClient.Hit::id).toList();
+            if (ids.isEmpty()) return List.of();
+            for (var row : segmentMapper.selectBatchIds(ids)) byId.put(row.getId(), row);
+            if (blockIndex != null) for (var row : blockIndex.resolve(ids)) byId.put(row.getId(), row);
+            var results = new ArrayList<Recalled>();
+            for (var hit : recalled) {
+                var row = byId.get(hit.id());
+                if (row != null && java.util.Objects.equals(row.getSourceId(), hit.source())
+                        && java.util.Objects.equals(row.getVersionId(), hit.version())
+                        && scope.contains(row.getSourceId(), row.getVersionId()))
+                    results.add(new Recalled(row, hit.score(), "bm25"));
+            }
+            return results;
+        } catch (RuntimeException failure) {
+            metrics.count("lexical_recall_failed");
+            warnings.add("BM25 词法索引未就绪或不可用，已降级为兼容关键词检索；精确术语召回可能下降。");
+            return keywordRecall(scope, request, query, topK);
+        }
     }
 
     private List<Recalled> keywordRecall(KnowledgeQueryScope scope, KnowledgeSearchRequest request, String query, int topK) {

@@ -59,3 +59,9 @@ MCP `search_video_knowledge` 从数组改为 `{scope,hits,warnings}`，省略 sp
 新增块、原文映射与向量缓存表，版本增加 index_profile/vector_dimension，旧版本默认 legacy-v1。已有 V1–V10 不重写；当前默认 profile 为 raw-boundary-v1-max1400-overlap1，新入库与显式重建使用它，旧资料不会自动重建。检索增加 evidence/versionId/indexProfile；新 segmentId 表示检索块，引用必须读取 evidence 内原文 ID。ask 引用增加 versionId，摘要不再可引用。原文 API/MCP 支持显式 versionId，旧参数仍查询当前版本。回退可配置 knowledge.index.profile=legacy-v1 并重建新版本，保留 V11 schema 和旧证据；旧二进制不能正确读取新块索引，不可只回滚代码后继续使用新版本指针。旧版清理需等引用保留策略验收，当前保留历史数据。
 
 MCP 数字参数不再截断小数；versionId 要求正整数。未实现版本查询的旧适配器拒绝显式历史版本请求；生产适配器已透传版本。网页回看后返回知识库保留搜索，按账号身份重建视图。Milvus 已成为后续优先目标，本版本仍使用 Qdrant，未进行生产切流。
+
+## V12 与可选 Milvus BM25（2026-10-09）
+
+[V12](../server/src/main/resources/db/migration/V12__knowledge_lexical_generations.sql) 新增按 backend/profile 隔离的词法 generation 完成回执，不修改既有原文或 Qdrant 数据。启用 `MILVUS_BM25_ENABLED=true` 后，新版本需 dense 与 BM25 写入成功才发布；已发布资料通过 `POST /knowledge/sources/{sourceId}/lexical-index` 回灌当前词法索引，不重建原文/embedding。collection/analyzer/index 参数不匹配会拒绝复用。未启用时继续当前 LIKE。
+
+启用后 keyword 使用 BM25，hybrid 使用 dense/BM25 RRF；HTTP like 为旧实现对照。BM25 命中增加 matchType=bm25；details/ask/stream 的 warnings 新增词法降级提示。Vue/MCP 已消费这些警告；旧数组 search 仍兼容，但无独立诊断字段。Milvus 未就绪/回灌不全/数据丢失时降级，正常零命中不降级。完整 dense 迁移与生产切读未完成。关闭开关并重启可回到 Qdrant + LIKE，保留 V12 和全部数据库数据；更换 URL/collection 必须重新回灌。实测与运行入口见 [词法阶段](architecture/Milvus词法召回与对照-2026-10-09.md)。

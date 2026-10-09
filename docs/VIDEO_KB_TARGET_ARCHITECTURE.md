@@ -14,7 +14,7 @@
 | 内容与归属 | source、media、placement，多目录复用 | 稳定内容身份下的资产版本替换；课程/章节关系按实际需求决定 |
 | 入库与恢复 | 持久 job/outbox、MQ、共享提取与 Checkpoint | 分片状态/缺口/覆盖率、长任务恢复、容量和成本控制 |
 | 索引 | generation 发布，旧版保留 | index profile 全面版本化、对账、旧版清理、可替换写入层 |
-| 检索 | Qdrant dense + LIKE + RRF | 可配置 BM25/sparse、融合与 reranker，以真实集对照 |
+| 检索 | 默认 Qdrant dense + LIKE + RRF，可显式启用 Milvus BM25 | 已有词法对照；补 reranker/覆盖、Milvus dense 对照与完整迁移 |
 | 证据与回答 | 单轮回答、引用文本检查 | 原始证据/派生块分离、claim 对照、指定版本/时间、部分回答 |
 | 对话 | 单次 ask | conversation 与 scope、指代改写、每轮检索与撤权处理 |
 | 开放 | 五工具与单上游主体 | 稳定范围契约；多人开放前主体、空间权限、配额和审计绑定 |
