@@ -49,7 +49,9 @@ jobs:
         working-directory: .
         run: |
           bash -n scripts/dev-up.sh
+          bash -n scripts/evidence-benchmark-runtime.sh scripts/milvus-benchmark-runtime.sh
           docker compose --env-file .env.example config --quiet
+          docker compose --env-file .env.example -f docker-compose.milvus.yml config --quiet
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
