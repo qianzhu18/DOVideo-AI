@@ -18,7 +18,7 @@ Java 21 / Spring Boot 后端 + Vue 工作台。当前支持跨视频检索与单
 
 同一视频可同时归入“前端学习”和“后端学习”，共享内容与索引。目录操作修改引用；重建构造新版本，失败保留旧的已发布知识。Agent 报告由用户按需启动，不决定知识是否就绪。
 
-检索使用 **Qdrant dense + MySQL LIKE + RRF**，按当前用户、目录归属和已发布版本过滤。BM25、reranker 和 Milvus 迁移尚未实现。固定时间窗与摘要聚合不能称为已完成的语义分块；逐字引用检查也不能证明每条结论正确。
+检索使用 **Qdrant dense + MySQL LIKE + RRF**，按当前用户、目录归属和已发布版本过滤。已新增可显式启用的 Milvus 原生 BM25 词法通道与降级提示，见 [实现与对照](docs/architecture/Milvus词法召回与对照-2026-10-09.md)；reranker 和完整 dense 迁移尚未实现。固定时间窗与摘要聚合不能称为已完成的语义分块；逐字引用检查也不能证明每条结论正确。
 
 MCP 提供五个只读工具：`list_knowledge_spaces`、`get_knowledge_catalog`、`search_video_knowledge`、`ask_video_knowledge`、`get_video_evidence`。客户端共用配置的上游账号，当前是个人/服务账号适配器；多人社区开放需要补主体绑定与空间授权。
 
@@ -30,7 +30,7 @@ MCP 提供五个只读工具：`list_knowledge_spaces`、`get_knowledge_catalog`
 | 后端 | Java 21、Spring Boot、MyBatis-Plus、LangChain4j |
 | 任务与缓存 | RocketMQ、Redis、Redisson |
 | 数据与媒体 | MySQL、MinIO |
-| 检索 | Qdrant、dense embedding、MySQL LIKE、RRF |
+| 检索 | Qdrant dense、MySQL LIKE、可选 Milvus BM25、RRF |
 | 视频提取 | FFmpeg、Tesseract、本项目配置的 ASR/文本/embedding provider |
 | 监测 | Actuator、Micrometer、Prometheus；指标显式开启并要求管理员身份 |
 

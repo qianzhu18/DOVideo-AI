@@ -163,6 +163,28 @@ class KnowledgeSegmentIndexServiceTest {
         return client;
     }
 
+    @Test void enabledBm25FailureCannotPublishNewGenerationOrDeleteOldDenseIndex() {
+        var sources=mock(KnowledgeSourceService.class);var versions=mock(KnowledgeSourceVersionMapper.class);
+        var segments=mock(KnowledgeSegmentMapper.class);var vectors=mock(QdrantVectorStore.class);
+        var checkpoints=mock(AgentCheckpointService.class);var embeddings=mock(EmbeddingUtils.class);
+        var publisher=mock(KnowledgeIndexPublisher.class);var lexical=mock(KnowledgeLexicalIndexService.class);
+        var current=source(9L,5L);current.setStatus("READY");
+        when(sources.requireSourceByMediaId(5L)).thenReturn(current);
+        when(versions.selectOne(any())).thenReturn(version(11L,1));
+        when(versions.insert(any(KnowledgeSourceVersion.class))).thenAnswer(call -> { ((KnowledgeSourceVersion)call.getArgument(0)).setId(12L);return 1; });
+        when(checkpoints.loadChunks(5L)).thenReturn(List.of(chunk(0,60000,"1")));
+        when(embeddings.embedBatch(any())).thenReturn(List.of(List.of(1.0),List.of(1.0)));
+        when(lexical.enabled()).thenReturn(true);
+        when(lexical.index(any(),any())).thenThrow(new IllegalStateException("BM25 write failed"));
+        var service=new KnowledgeSegmentIndexService(sources,versions,segments,vectors,checkpoints,
+                mock(VideoChunkingService.class),embeddings,mock(KnowledgeAuditService.class),"model",publisher,
+                locks(),new KnowledgeMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),mock(KnowledgeBlockIndexService.class),"legacy-v1");
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"lexicalIndex",lexical);
+        assertThrows(IllegalStateException.class,()->service.indexMedia(5L));
+        verify(publisher,never()).publish(any(),any());verify(publisher).fail(eq(current),any(),eq("BM25 write failed"));
+        verify(vectors,never()).deleteSource(any());assertEquals(1,current.getCurrentVersion());
+    }
+
     private static KnowledgeSource source(Long id, Long mediaId) {
         KnowledgeSource source = new KnowledgeSource();
         source.setId(id);

@@ -22,6 +22,15 @@ def percentile(values, fraction):
     ordered = sorted(values)
     return ordered[max(0, math.ceil(len(ordered) * fraction) - 1)]
 
+def source_fingerprint(root):
+    """Identify the evaluated product/evaluator sources even before the branch is committed."""
+    digest = hashlib.sha256()
+    paths = sorted(p for p in (root/'server/src/main').rglob('*') if p.is_file())
+    paths += [root/'eval/evidence_benchmark.py', root/'eval/evidence_metrics.py']
+    for path in paths:
+        digest.update(str(path.relative_to(root)).encode() + b'\0' + path.read_bytes() + b'\0')
+    return digest.hexdigest()
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--base-url', default='http://127.0.0.1:19090')
@@ -30,6 +39,9 @@ def main():
     parser.add_argument('--strategies', nargs='+', default=['vector','keyword','hybrid'])
     parser.add_argument('--split', choices=['dev','holdout','all'], default='dev')
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--search-details', action='store_true', help='Capture retrieval degradation warnings')
+    parser.add_argument('--require-no-warnings', action='store_true', help='Reject degraded runs instead of benchmarking fallback')
+    parser.add_argument('--lexical-profile', default='unspecified', help='Record the configured lexical implementation')
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     golden = json.loads(args.golden.read_text())
@@ -45,13 +57,15 @@ def main():
     for strategy in args.strategies:
         for case in cases:
             started = time.perf_counter()
-            data = http_json(args.base_url, '/knowledge/search', {
+            data = http_json(args.base_url, '/knowledge/search/details' if args.search_details else '/knowledge/search', {
                 'spaceId':mapping['spaceId'],'query':case['question'],'topK':golden['defaultK'],
                 'strategy':strategy}, token)
             if data.get('code') != 0: raise RuntimeError('Search failed: ' + case['id'])
-            hits = data['data']
+            warnings = data['data'].get('warnings', []) if args.search_details else []
+            if args.require_no_warnings and warnings: raise RuntimeError('Degraded retrieval: ' + case['id'])
+            hits = data['data']['hits'] if args.search_details else data['data']
             row = score_case(case, hits, media_keys, golden['defaultK'])
-            row.update(strategy=strategy, seconds=time.perf_counter()-started, hits=hits)
+            row.update(strategy=strategy, seconds=time.perf_counter()-started, hits=hits, warnings=warnings)
             rows.append(row)
     results = {}
     for strategy in args.strategies:
@@ -64,7 +78,9 @@ def main():
         'goldenSha256':hashlib.sha256(args.golden.read_bytes()).hexdigest(),
         'split':args.split,'mapping':mapping,'modelQualityClaim':mapping.get('realEmbedding',False),
         'productionCapacityClaim':False,'billingCost':None,'latencyPercentileMethod':'nearest-rank-ceil',
-        'workingTreeDirty':bool(subprocess.check_output(['git','status','--porcelain'],cwd=root,text=True).strip())}
+        'workingTreeDirty':bool(subprocess.check_output(['git','status','--porcelain'],cwd=root,text=True).strip()),
+        'productAndEvaluatorSourceSha256':source_fingerprint(root),
+        'lexicalProfile':args.lexical_profile, 'retrievalWarningsCaptured':args.search_details}
     args.output.parent.mkdir(parents=True,exist_ok=True)
     args.output.write_text(json.dumps({'manifest':manifest,'metrics':results,'cases':rows},ensure_ascii=False,indent=2)+'\n')
     print(json.dumps(results, ensure_ascii=False))

@@ -82,3 +82,9 @@ bash scripts/mcp_sop_check.sh
 检索 hits 增加 evidence 原文数组和索引 profile/versionId。新 segmentId 是检索块；引用应使用 evidence 的 segmentId、versionId 和原始时间。get_video_evidence 可传 versionId 读取该视频保留的已发布原文版本，省略读取当前版；结果包含原文 ID/版本。ask 引用携带原文 ID/versionId，摘要不能作为引用依据。删除或越权仍拒绝，MCP 不持有数据库直连权限。
 
 versionId 必须是正整数，小数/零/负数/字符串返回协议参数错误。旧适配器如未实现历史版本能力，指定版本会明确报错，不能降级为当前版；省略版本仍兼容当前版读取。原文存在性校验不代表结论语义成立。
+
+## Milvus 词法模式（2026-10-09）
+
+MCP 继续调用后端范围/检索接口，不直接操作 Milvus。后端启用 BM25 并完成当前范围回灌后，strategy=keyword 返回 matchType=bm25；默认 hybrid 融合 dense 与 BM25。客户端需展示 warnings，尤其是“词法索引未就绪或不可用，已降级”提示；不能把降级结果当完整 BM25 结果。HTTP like 仅用于工程旧词法对照，不是 MCP 工具 schema 的新增选项。
+
+[同主体 MCP 实机验收](../eval/reports/milvus-bm25-mcp-20261009.json) 验证 Web/MCP 候选一致、BM25 标记和降级/恢复提示。仍是单个配置上游主体，不构成社区多主体开放。配置与迁移边界见 [词法实现](architecture/Milvus词法召回与对照-2026-10-09.md)。

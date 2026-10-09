@@ -40,8 +40,9 @@ public class KnowledgeSearchController {
             @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId,
             @Valid @RequestBody KnowledgeSearchRequest request) {
         var state = queryStates.describe(userId, request.spaceId(), request.collectionId());
-        var hits = searchService.search(userId, request);
-        return Result.ok(java.util.Map.of("scope", state, "hits", hits,
-                "warnings", state.warning().isEmpty() ? List.of() : List.of(state.warning())));
+        var result = searchService.searchWithDiagnostics(userId, request);
+        var warnings = new java.util.ArrayList<>(result.warnings());
+        if (!state.warning().isEmpty()) warnings.add(state.warning());
+        return Result.ok(java.util.Map.of("scope", state, "hits", result.hits(), "warnings", warnings));
     }
 }

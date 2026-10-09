@@ -64,7 +64,7 @@ class KnowledgeEvidenceBlocksTest {
         var search=mock(KnowledgeSearchService.class);var generator=mock(KnowledgeAnswerGenerator.class);
         var raw=KnowledgeEvidence.from(raw("original",60000,"缓存击穿使用互斥锁保护数据库"));
         var hit=new KnowledgeSearchHit("block",9L,"VIDEO",5L,"课程",0,180000,0.9,"检索块", "", "摘要说缓存永不过期", "vector",11L,EvidenceBlockChunker.PROFILE,List.of(raw));
-        when(search.search(anyLong(),any())).thenReturn(List.of(hit));
+        when(search.searchWithDiagnostics(anyLong(),any())).thenReturn(new KnowledgeSearchService.SearchResult(List.of(hit), List.of()));
         var service=new KnowledgeAnswerService(search,generator);var request=new KnowledgeAskRequest(3L,null,"缓存",8,"vector");
         when(generator.generate(anyString(),anyList())).thenReturn(new KnowledgeAnswerDraft("SUPPORTED","使用互斥锁",List.of(new KnowledgeAnswerDraft.CitationDraft("original","使用互斥锁","互斥锁保护数据库"))));
         var answer=service.ask(7L,request);assertEquals(60000,answer.citations().getFirst().startMs());assertEquals(11L,answer.citations().getFirst().versionId());

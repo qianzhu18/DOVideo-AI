@@ -37,13 +37,14 @@ public class KnowledgeAnswerService {
     public KnowledgeAnswer ask(Long userId, KnowledgeAskRequest request) {
         var state = queryStates == null ? null : queryStates.describe(userId, request.spaceId(), request.collectionId());
         if (state != null && state.readySources() == 0) return unavailable(state);
-        List<KnowledgeSearchHit> hits = searchService.search(userId, request.toSearchRequest());
+        var retrieval = searchService.searchWithDiagnostics(userId, request.toSearchRequest());
+        List<KnowledgeSearchHit> hits = retrieval.hits();
         if (hits.isEmpty()) {
-            return withScope(insufficient(NO_EVIDENCE_MESSAGE, List.of("未检索到候选证据，未调用生成模型。")), state);
+            return withRetrievalWarnings(withScope(insufficient(NO_EVIDENCE_MESSAGE, List.of("未检索到候选证据，未调用生成模型。")), state), retrieval.warnings());
         }
 
         KnowledgeAnswerDraft draft = answerGenerator.generate(request.query().trim(), hits);
-        return withScope(validateDraft(draft, hits), state);
+        return withRetrievalWarnings(withScope(validateDraft(draft, hits), state), retrieval.warnings());
     }
 
     public KnowledgeAnswer askStreaming(Long userId, KnowledgeAskRequest request,
@@ -51,15 +52,22 @@ public class KnowledgeAnswerService {
         phase.accept("retrieving");
         var state = queryStates == null ? null : queryStates.describe(userId, request.spaceId(), request.collectionId());
         if (state != null && state.readySources() == 0) return unavailable(state);
-        List<KnowledgeSearchHit> hits = searchService.search(userId, request.toSearchRequest());
+        var retrieval = searchService.searchWithDiagnostics(userId, request.toSearchRequest());
+        List<KnowledgeSearchHit> hits = retrieval.hits();
         if (hits.isEmpty()) {
             phase.accept("verifying");
-            return withScope(insufficient(NO_EVIDENCE_MESSAGE, List.of("未检索到候选证据，未调用生成模型。")), state);
+            return withRetrievalWarnings(withScope(insufficient(NO_EVIDENCE_MESSAGE, List.of("未检索到候选证据，未调用生成模型。")), state), retrieval.warnings());
         }
         phase.accept("generating");
         KnowledgeAnswerDraft draft = answerGenerator.generateStreaming(request.query().trim(), hits, answerDelta);
         phase.accept("verifying");
-        return withScope(validateDraft(draft, hits), state);
+        return withRetrievalWarnings(withScope(validateDraft(draft, hits), state), retrieval.warnings());
+    }
+
+    private KnowledgeAnswer withRetrievalWarnings(KnowledgeAnswer answer, List<String> retrievalWarnings) {
+        var warnings = new ArrayList<>(answer.warnings());
+        warnings.addAll(retrievalWarnings);
+        return new KnowledgeAnswer(answer.answerability(), answer.answer(), answer.citations(), warnings, answer.scope());
     }
 
     private KnowledgeAnswer unavailable(com.example.server.dto.KnowledgeQueryState state) {

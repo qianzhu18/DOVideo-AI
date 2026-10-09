@@ -18,7 +18,7 @@
 | 可复用提取 | `VideoPreparationService`、Checkpoint | 共享 ASR/OCR 内容准备，避免报告与入库重复提取 |
 | 索引构建/发布 | `KnowledgeSegmentIndexService`、`KnowledgeIndexPublisher` | 新版本分段/embedding/向量写入完成后发布 |
 | 授权范围 | `KnowledgeScopeResolver/QueryScope` | owner、placement、目录子树、READY/current version |
-| 检索/回答 | `KnowledgeSearchService`、既有问答生成器 | dense/LIKE/RRF；回填证据与单轮回答 |
+| 检索/回答 | `KnowledgeSearchService`、既有问答生成器 | dense/LIKE 或可选 Milvus BM25/RRF；回填证据、降级提示与单轮回答 |
 | 外部接入 | Java `mcp-server` 经 Knowledge API | 五个只读工具；复用后端范围与权限规则 |
 
 ## 当前数据流
@@ -76,9 +76,9 @@ flowchart LR
 
 ## 检索、问答与库选型
 
-`KnowledgeVectorIndex` 是查询侧抽象，目前由 Qdrant 实现；写入侧仍绑定 Qdrant。过滤到授权 source 与 generation 后召回，词法查询仍为 MySQL LIKE，hybrid 并行召回并做 RRF。向量不可用时可保留词法结果，不表示模型问答或所有模式都不会失败。
+`KnowledgeVectorIndex` 是查询侧抽象，目前由 Qdrant 实现；写入侧仍绑定 Qdrant。过滤到授权 source 与 generation 后召回，默认词法为 MySQL LIKE，显式启用 Milvus 后 keyword 改用原生 BM25，hybrid 并行召回并做 RRF；缺回灌/数据丢失/请求失败会携带 warnings 降级为 LIKE。向量不可用时可保留词法结果，不表示模型问答或所有模式都不会失败。
 
-当前没有 BM25 和 reranker；RRF 只融合候选排序。保留 Qdrant 是维持已验证基线的当前行为，不说明它在所有负载下优于 Milvus。2026-10-09 负责人指定 Milvus 为后续优先技术栈；迁移前在同一语料、切块、embedding、query 和授权过滤条件下对照，切换需双写、回灌、影子查询、权限/版本对账与回退验证。写入接口抽象与迁移尚未完成。
+Milvus 原生 BM25 词法通道已有本地实现与真实集对照，reranker 尚未实现；RRF 只融合候选排序。保留 Qdrant 是维持已验证基线的当前行为，不说明它在所有负载下优于 Milvus。2026-10-09 负责人指定 Milvus 为后续优先技术栈；迁移前在同一语料、切块、embedding、query 和授权过滤条件下对照，切换需双写、回灌、影子查询、权限/版本对账与回退验证。写入接口抽象与迁移尚未完成。
 
 当前单轮问答沿用既有证据与拒答生成。引用字符串校验不能证明结论语义正确；原文 ID/版本/时间已映射并回归，结论语义校验、多轮对话和混合检索的全部必要来源覆盖仍待完成。
 
@@ -103,4 +103,8 @@ flowchart LR
 
 ## V11 证据索引（2026-10-08）
 
-默认 profile 不再依赖五分钟摘要生成；直接保存原始 ASR/OCR 时间窗，另建边界检索块和块到原文映射，再复用或生成 BGE 向量、写 Qdrant，全部成功后发布 generation。旧算法通过 legacy-v1 对照。检索回填 evidence 数组，问答引用原文 ID/版本/时间，历史 READY 版本可授权读取。词法当前仍 LIKE，结论级语义核验尚未完成。详细现行字段与实测见 [原文与检索块分离](architecture/原文与检索块分离-2026-10-08.md)。
+默认 profile 不再依赖五分钟摘要生成；直接保存原始 ASR/OCR 时间窗，另建边界检索块和块到原文映射，再复用或生成 BGE 向量、写 Qdrant，全部成功后发布 generation。旧算法通过 legacy-v1 对照。检索回填 evidence 数组，问答引用原文 ID/版本/时间，历史 READY 版本可授权读取。默认词法仍 LIKE，可显式启用 Milvus BM25；结论级语义核验尚未完成。详细现行字段与实测见 [原文与检索块分离](architecture/原文与检索块分离-2026-10-08.md)。
+
+## 可选词法索引（2026-10-09）
+
+`MilvusLexicalClient` 提供 BM25 collection/schema/index 参数校验、原文 upsert、Strong count 与范围查询；`KnowledgeLexicalIndexService` 管理 V12 完成回执和当前版本词法回灌。新 generation 的可选词法写入位于 dense 写入之后、SQL 发布之前。查询时检查全部授权版本的回灌完整性，失败整路降级并携带 warnings；原文回填继续由 SQL 再次授权。Qdrant dense 写入没有抽象成任意库可替换，Milvus dense/影子查询/垃圾清理仍待后续迁移。详见 [实现与真实集对照](architecture/Milvus词法召回与对照-2026-10-09.md)。

@@ -308,7 +308,7 @@
                     @click="$emit('open-evidence', { mediaId: hit.mediaId, timestampMs: hit.startMs })"
                   >{{ formatMs(hit.startMs) }} – {{ formatMs(hit.endMs) }}</button>
                   <span v-else class="search-hit-time">{{ formatMs(hit.startMs) }} – {{ formatMs(hit.endMs) }}</span>
-                  <span class="search-hit-kind">{{ hit.sourceType === 'SCRIPT' ? '脚本' : '视频' }}·{{ ({ vector: '语义', keyword: '关键词', hybrid: '混合检索' })[hit.matchType] || hit.matchType }}</span>
+                  <span class="search-hit-kind">{{ hit.sourceType === 'SCRIPT' ? '脚本' : '视频' }}·{{ ({ vector: '语义', keyword: '关键词', bm25: '词法', hybrid: '混合检索' })[hit.matchType] || hit.matchType }}</span>
                 </div>
                 <p>{{ hit.transcript || hit.ocrText || hit.summary }}</p>
                 <details v-if="hit.evidence?.length" class="original-evidence">
